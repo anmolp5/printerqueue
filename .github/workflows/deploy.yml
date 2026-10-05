@@ -1,0 +1,62 @@
+name: Deploy Next.js to GitHub Pages
+
+on:
+  push:
+    branches: ["main", "master"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build static export for GitHub Pages
+        env:
+          GITHUB_PAGES: "true"
+          NEXT_PUBLIC_AZURE_CLIENT_ID: "0ffcf932-2712-4180-8599-2fa712117d8d"
+          NEXT_PUBLIC_AZURE_TENANT_ID: "44467e6f-462c-4ea2-823f-7800de5434e3"
+          NEXT_PUBLIC_ADMIN_EMAILS: "admin@illinois.edu,anmolp5@illinois.edu"
+          NEXT_PUBLIC_BASE_URL: "https://anmolprabhakar.com/printerqueue"
+        run: |
+          rm -rf src/app/api
+          npm run build
+          touch out/.nojekyll
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./out
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
