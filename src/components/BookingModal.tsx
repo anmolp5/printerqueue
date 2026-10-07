@@ -187,15 +187,15 @@ export const BookingModal: React.FC<BookingModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-3 sm:p-4 overflow-y-auto"
       onClick={onClose}
     >
       <div
-        className="bg-white rounded-2xl border border-zinc-200 shadow-2xl max-w-lg w-full overflow-hidden"
+        className="bg-white rounded-2xl border border-zinc-200 shadow-2xl max-w-lg w-full max-h-[90vh] flex flex-col overflow-hidden my-auto"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="bg-zinc-900 text-white px-6 py-4 flex items-center justify-between">
+        <div className="bg-zinc-900 text-white px-6 py-4 flex items-center justify-between shrink-0">
           <div>
             <h2 className="text-lg font-bold flex items-center gap-2">
               <CalendarIcon className="w-5 h-5 text-orange-400" />
@@ -207,13 +207,16 @@ export const BookingModal: React.FC<BookingModalProps> = ({
           </div>
           <button
             onClick={onClose}
-            className="text-zinc-400 hover:text-white p-1 rounded-lg transition-colors"
+            className="text-zinc-400 hover:text-white p-1 rounded-lg transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+        <form
+          onSubmit={handleSubmit}
+          className="p-6 space-y-4 overflow-y-auto flex-1 overscroll-contain"
+        >
           {/* User Identity Badge */}
           <div className="flex items-center justify-between px-3.5 py-2 rounded-lg bg-zinc-50 border border-zinc-200 text-xs">
             <span className="text-zinc-500">Booking as UIUC Member:</span>
@@ -469,7 +472,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
           )}
 
           {/* Footer Buttons */}
-          <div className="flex items-center justify-end gap-2.5 pt-1">
+          <div className="sticky bottom-0 bg-white pt-3 pb-1 border-t border-zinc-100 flex items-center justify-end gap-2.5">
             <button
               type="button"
               onClick={onClose}

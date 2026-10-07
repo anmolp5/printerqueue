@@ -99,7 +99,8 @@ const SAMPLE_PREVIEW_VARIABLES: Record<string, string | number> = {
 };
 
 export default function AdminDashboardPage() {
-  const { user, isAdmin, toggleCurrentUserRole } = useUserSession();
+  const { user, isAdmin, canToggleAdminRole, toggleCurrentUserRole } =
+    useUserSession();
 
   const [activeTab, setActiveTab] = useState<AdminTabId>("permissions");
   const [settings, setSettings] = useState<AdminSettings>(() =>
@@ -511,13 +512,13 @@ export default function AdminDashboardPage() {
               <ArrowLeft className="w-4 h-4" />
               <span>Return to Print Queue</span>
             </Link>
-            {user && (
+            {user && canToggleAdminRole && (
               <button
                 onClick={toggleCurrentUserRole}
                 className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
               >
                 <Shield className="w-4 h-4" />
-                <span>Switch Role to Admin</span>
+                <span>Switch Back to Admin Role</span>
               </button>
             )}
           </div>

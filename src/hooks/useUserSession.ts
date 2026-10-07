@@ -88,19 +88,26 @@ export function useUserSession() {
   useEffect(() => {
     return subscribeToAdminSettings(() => {
       if (!currentCachedUser) return;
+      const isAuthorizedAdmin = isEmailInAdminAllowlist(
+        currentCachedUser.email
+      );
+      if (!isAuthorizedAdmin) {
+        if (currentCachedUser.role !== "user") {
+          currentCachedUser = { ...currentCachedUser, role: "user" };
+          notifySessionListeners();
+        }
+        return;
+      }
       const roleOverride =
         typeof window !== "undefined"
           ? (window.localStorage.getItem(
               ROLE_OVERRIDE_STORAGE_KEY
             ) as UserRole | null)
           : null;
-      if (!roleOverride) {
-        const shouldBeAdmin = isEmailInAdminAllowlist(currentCachedUser.email);
-        const nextRole: UserRole = shouldBeAdmin ? "admin" : "user";
-        if (currentCachedUser.role !== nextRole) {
-          currentCachedUser = { ...currentCachedUser, role: nextRole };
-          notifySessionListeners();
-        }
+      const nextRole: UserRole = roleOverride === "user" ? "user" : "admin";
+      if (currentCachedUser.role !== nextRole) {
+        currentCachedUser = { ...currentCachedUser, role: nextRole };
+        notifySessionListeners();
       }
     });
   }, []);
@@ -114,6 +121,7 @@ export function useUserSession() {
 
     // 1. Check if authenticated via real Microsoft OAuth2 PKCE flow
     if (oauthProfile) {
+      const isAuthorizedAdmin = isEmailInAdminAllowlist(oauthProfile.email);
       const roleOverride =
         typeof window !== "undefined"
           ? (window.localStorage.getItem(
@@ -121,9 +129,15 @@ export function useUserSession() {
             ) as UserRole | null)
           : null;
 
+      const resolvedRole: UserRole = isAuthorizedAdmin
+        ? roleOverride === "user"
+          ? "user"
+          : "admin"
+        : "user";
+
       const resolvedProfile: UserProfile = {
         ...oauthProfile,
-        role: roleOverride || oauthProfile.role,
+        role: resolvedRole,
       };
 
       currentCachedUser = resolvedProfile;
@@ -151,13 +165,22 @@ export function useUserSession() {
       };
     }
 
-    // 2. Otherwise check if a Dev Persona was selected
+    // 2. Otherwise check if a saved session or Dev Persona was selected
     if (typeof window !== "undefined") {
       const savedMsalRaw = window.localStorage.getItem(MSAL_AUTH_PROFILE_KEY);
       if (savedMsalRaw) {
         try {
           const parsed = JSON.parse(savedMsalRaw) as UserProfile;
-          currentCachedUser = parsed;
+          const isAuthorizedAdmin = isEmailInAdminAllowlist(parsed.email);
+          const roleOverride = window.localStorage.getItem(
+            ROLE_OVERRIDE_STORAGE_KEY
+          ) as UserRole | null;
+          const resolvedRole: UserRole = isAuthorizedAdmin
+            ? roleOverride === "user"
+              ? "user"
+              : "admin"
+            : "user";
+          currentCachedUser = { ...parsed, role: resolvedRole };
           notifySessionListeners();
           setIsLoading(false);
           return () => {
@@ -172,7 +195,16 @@ export function useUserSession() {
       if (savedId && savedId !== "SIGNED_OUT") {
         const found = DEV_PERSONAS.find((p) => p.id === savedId);
         if (found) {
-          currentCachedUser = found;
+          const isAuthorizedAdmin = isEmailInAdminAllowlist(found.email);
+          const roleOverride = window.localStorage.getItem(
+            ROLE_OVERRIDE_STORAGE_KEY
+          ) as UserRole | null;
+          const resolvedRole: UserRole = isAuthorizedAdmin
+            ? roleOverride === "user"
+              ? "user"
+              : "admin"
+            : "user";
+          currentCachedUser = { ...found, role: resolvedRole };
           notifySessionListeners();
         }
       }
@@ -252,17 +284,25 @@ export function useUserSession() {
   const switchDevPersona = useCallback((personaId: string) => {
     const found = DEV_PERSONAS.find((p) => p.id === personaId);
     if (found) {
-      currentCachedUser = found;
+      const isAuthorizedAdmin = isEmailInAdminAllowlist(found.email);
+      currentCachedUser = {
+        ...found,
+        role: isAuthorizedAdmin ? "admin" : "user",
+      };
       currentDomainError = null;
       if (typeof window !== "undefined") {
         window.localStorage.setItem(DEV_PERSONA_STORAGE_KEY, found.id);
+        window.localStorage.removeItem(ROLE_OVERRIDE_STORAGE_KEY);
       }
       notifySessionListeners();
     }
   }, []);
 
   const toggleCurrentUserRole = useCallback(() => {
-    if (!currentCachedUser) return;
+    // Only allow role toggling if the logged-in user's email is an authorized admin
+    if (!currentCachedUser || !isEmailInAdminAllowlist(currentCachedUser.email)) {
+      return;
+    }
     const nextRole: UserRole =
       currentCachedUser.role === "admin" ? "user" : "admin";
     currentCachedUser = {
@@ -287,10 +327,15 @@ export function useUserSession() {
       notifySessionListeners();
       return;
     }
-    currentCachedUser = profile;
+    const isAuthorizedAdmin = isEmailInAdminAllowlist(profile.email);
+    currentCachedUser = {
+      ...profile,
+      role: isAuthorizedAdmin ? "admin" : "user",
+    };
     currentDomainError = null;
     if (typeof window !== "undefined") {
       window.localStorage.setItem(DEV_PERSONA_STORAGE_KEY, profile.id);
+      window.localStorage.removeItem(ROLE_OVERRIDE_STORAGE_KEY);
     }
     notifySessionListeners();
   }, []);
@@ -317,13 +362,19 @@ export function useUserSession() {
     if (typeof window !== "undefined") {
       window.localStorage.setItem(DEV_PERSONA_STORAGE_KEY, "SIGNED_OUT");
       window.localStorage.removeItem(MSAL_AUTH_PROFILE_KEY);
+      window.localStorage.removeItem(ROLE_OVERRIDE_STORAGE_KEY);
     }
     notifySessionListeners();
   }, [clearOauthProfile]);
 
+  const canToggleAdminRole = Boolean(
+    user && isEmailInAdminAllowlist(user.email)
+  );
+
   return {
     user,
-    isAdmin: user?.role === "admin",
+    isAdmin: user?.role === "admin" && canToggleAdminRole,
+    canToggleAdminRole,
     isLoading: isLoading || isExchangingCode,
     domainError,
     clearDomainError,

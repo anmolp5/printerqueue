@@ -110,15 +110,15 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-3 sm:p-4 overflow-y-auto"
       onClick={onClose}
     >
       <div
-        className="bg-white rounded-2xl border border-zinc-200 shadow-2xl max-w-lg w-full overflow-hidden"
+        className="bg-white rounded-2xl border border-zinc-200 shadow-2xl max-w-lg w-full max-h-[90vh] flex flex-col overflow-hidden my-auto"
         onClick={(e) => e.stopPropagation()}
       >
         <div
-          className={`px-6 py-4 text-white flex items-center justify-between ${
+          className={`px-6 py-4 text-white flex items-center justify-between shrink-0 ${
             isAdmin ? "bg-indigo-950" : "bg-zinc-900"
           }`}
         >
@@ -137,14 +137,17 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
           </div>
           <button
             onClick={onClose}
-            className="text-zinc-400 hover:text-white p-1 rounded-lg"
+            className="text-zinc-400 hover:text-white p-1 rounded-lg cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
         {isAdmin ? (
-          <form onSubmit={handleSave} className="p-6 space-y-4">
+          <form
+            onSubmit={handleSave}
+            className="p-6 space-y-4 overflow-y-auto flex-1 overscroll-contain"
+          >
             {/* Unified iOS Drum Wheel Picker for Start Time Override */}
             <div>
               <div className="flex items-center justify-between mb-1.5">
@@ -254,11 +257,11 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
               </div>
             )}
 
-            <div className="flex items-center justify-end gap-2 pt-2">
+            <div className="sticky bottom-0 bg-white pt-3 pb-1 border-t border-zinc-100 flex items-center justify-end gap-2">
               <button
                 type="button"
                 onClick={onClose}
-                className="px-4 py-2 text-xs font-semibold text-zinc-600 hover:bg-zinc-100 rounded-lg border border-zinc-200"
+                className="px-4 py-2 text-xs font-semibold text-zinc-600 hover:bg-zinc-100 rounded-lg border border-zinc-200 cursor-pointer"
               >
                 Close
               </button>
@@ -273,7 +276,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
             </div>
           </form>
         ) : (
-          <div className="p-6 space-y-4 text-xs">
+          <div className="p-6 space-y-4 text-xs overflow-y-auto flex-1">
             <div className="space-y-2 bg-zinc-50 p-4 rounded-xl border border-zinc-200">
               <div className="flex justify-between">
                 <span className="text-zinc-500">File Name:</span>

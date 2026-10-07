@@ -55,6 +55,7 @@ export default function HomePage() {
   const {
     user,
     isAdmin,
+    canToggleAdminRole,
     domainError,
     clearDomainError,
     switchDevPersona,
@@ -282,17 +283,19 @@ export default function HomePage() {
                   {user.email}
                 </span>
               </div>
-              <button
-                onClick={toggleCurrentUserRole}
-                title="Click to toggle your role between Student (user) and Lab Staff (admin)"
-                className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider border transition-colors cursor-pointer ${
-                  isAdmin
-                    ? "bg-indigo-600 text-white border-indigo-400 hover:bg-indigo-500"
-                    : "bg-slate-700 text-slate-200 border-slate-600 hover:bg-slate-600"
-                }`}
-              >
-                Role: {user.role}
-              </button>
+              {canToggleAdminRole && (
+                <button
+                  onClick={toggleCurrentUserRole}
+                  title="Admin View Switcher: Toggle between Admin Mode and Public Student View"
+                  className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider border transition-colors cursor-pointer ${
+                    isAdmin
+                      ? "bg-indigo-600 text-white border-indigo-400 hover:bg-indigo-500"
+                      : "bg-slate-700 text-slate-200 border-slate-600 hover:bg-slate-600"
+                  }`}
+                >
+                  Role: {user.role}
+                </button>
+              )}
               <button
                 onClick={signOut}
                 title="Sign out to view Microsoft Entra Login Screen"
