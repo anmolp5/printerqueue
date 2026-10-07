@@ -141,19 +141,20 @@ export function isUserBanned(email: string | null | undefined): boolean {
 }
 
 export function isEmailInAdminAllowlist(email: string): boolean {
+  if (!email) return false;
   const cleaned = email.trim().toLowerCase();
-  const raw =
-    process.env.NEXT_PUBLIC_ADMIN_EMAILS ||
-    "admin@illinois.edu,anmolp5@illinois.edu";
-  const envList = raw
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
+  const netId = cleaned.split("@")[0];
 
   const settings = getAdminSettings();
   const dynamicList = (settings.permissions.adminEmails || []).map((s) =>
     s.trim().toLowerCase()
   );
 
-  return envList.includes(cleaned) || dynamicList.includes(cleaned);
+  return dynamicList.some(
+    (entry) =>
+      entry === cleaned ||
+      (cleaned.endsWith("@illinois.edu") &&
+        (entry === netId ||
+          (entry.endsWith("@illinois.edu") && entry.split("@")[0] === netId)))
+  );
 }

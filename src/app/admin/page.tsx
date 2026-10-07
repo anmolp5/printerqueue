@@ -99,8 +99,13 @@ const SAMPLE_PREVIEW_VARIABLES: Record<string, string | number> = {
 };
 
 export default function AdminDashboardPage() {
-  const { user, isAdmin, canToggleAdminRole, toggleCurrentUserRole } =
-    useUserSession();
+  const {
+    user,
+    isAdmin,
+    canToggleAdminRole,
+    toggleCurrentUserRole,
+    switchDevPersona,
+  } = useUserSession();
 
   const [activeTab, setActiveTab] = useState<AdminTabId>("permissions");
   const [settings, setSettings] = useState<AdminSettings>(() =>
@@ -173,9 +178,55 @@ export default function AdminDashboardPage() {
 
   const commitSettings = (
     nextSettings: AdminSettings,
-    successMessage = "Admin settings saved and applied live."
+    successMessage = "Admin settings saved and synced across all devices."
   ) => {
-    const res = saveAdminSettings(nextSettings, user?.email);
+    const mergedWithPending: AdminSettings = {
+      ...nextSettings,
+      permissions: {
+        ...nextSettings.permissions,
+        adminEmails: [...nextSettings.permissions.adminEmails],
+        bannedEmails: [...nextSettings.permissions.bannedEmails],
+        allowedDomains: [...nextSettings.permissions.allowedDomains],
+      },
+    };
+
+    if (userIsSuperAdmin && newAdminEmail.trim()) {
+      const rawAdmin = newAdminEmail.trim().toLowerCase();
+      const formattedAdmin = rawAdmin.includes("@")
+        ? rawAdmin
+        : `${rawAdmin}@illinois.edu`;
+      if (!mergedWithPending.permissions.adminEmails.includes(formattedAdmin)) {
+        mergedWithPending.permissions.adminEmails.push(formattedAdmin);
+      }
+      setNewAdminEmail("");
+    }
+
+    if (newBannedEmail.trim()) {
+      const rawBanned = newBannedEmail.trim().toLowerCase();
+      const formattedBanned = rawBanned.includes("@")
+        ? rawBanned
+        : `${rawBanned}@illinois.edu`;
+      if (
+        formattedBanned !== SUPER_ADMIN_EMAIL &&
+        !mergedWithPending.permissions.bannedEmails.includes(formattedBanned)
+      ) {
+        mergedWithPending.permissions.bannedEmails.push(formattedBanned);
+      }
+      setNewBannedEmail("");
+    }
+
+    if (newDomain.trim()) {
+      const cleanDomain = newDomain.trim().toLowerCase().replace(/^@/, "");
+      if (
+        cleanDomain.includes(".") &&
+        !mergedWithPending.permissions.allowedDomains.includes(cleanDomain)
+      ) {
+        mergedWithPending.permissions.allowedDomains.push(cleanDomain);
+      }
+      setNewDomain("");
+    }
+
+    const res = saveAdminSettings(mergedWithPending, user?.email);
     if (res.error) {
       showToast("error", res.error);
       setSettings(res.data);
@@ -196,11 +247,12 @@ export default function AdminDashboardPage() {
       );
       return;
     }
-    const cleaned = newAdminEmail.trim().toLowerCase();
-    if (!cleaned || !cleaned.includes("@")) {
-      showToast("error", "Please enter a valid email address.");
+    const raw = newAdminEmail.trim().toLowerCase();
+    if (!raw) {
+      showToast("error", "Please enter a NetID or @illinois.edu email address.");
       return;
     }
+    const cleaned = raw.includes("@") ? raw : `${raw}@illinois.edu`;
     if (settings.permissions.adminEmails.includes(cleaned)) {
       showToast("error", `"${cleaned}" is already an administrator.`);
       return;
@@ -212,14 +264,11 @@ export default function AdminDashboardPage() {
         adminEmails: [...settings.permissions.adminEmails, cleaned],
       },
     };
-    if (
-      commitSettings(
-        next,
-        `Added ${cleaned} to the Lab Administrators allowlist.`
-      )
-    ) {
-      setNewAdminEmail("");
-    }
+    setNewAdminEmail("");
+    commitSettings(
+      next,
+      `Added ${cleaned} to Lab Administrators and synced to cloud!`
+    );
   };
 
   const handleRemoveAdminEmail = (emailToRemove: string) => {
@@ -781,13 +830,13 @@ export default function AdminDashboardPage() {
               {/* Add Admin Form */}
               <form onSubmit={handleAddAdminEmail} className="flex gap-2">
                 <input
-                  type="email"
+                  type="text"
                   value={newAdminEmail}
                   onChange={(e) => setNewAdminEmail(e.target.value)}
                   disabled={!userIsSuperAdmin}
                   placeholder={
                     userIsSuperAdmin
-                      ? "netid@illinois.edu"
+                      ? "Enter NetID or netid@illinois.edu"
                       : `Locked — Only ${SUPER_ADMIN_EMAIL} can add admins`
                   }
                   className="flex-1 px-3 py-2 rounded-lg border border-zinc-300 text-xs focus:outline-none focus:ring-2 focus:ring-[#13294B] disabled:bg-zinc-100 disabled:text-zinc-400"
@@ -807,12 +856,14 @@ export default function AdminDashboardPage() {
                 {settings.permissions.adminEmails.map((adminEmail) => {
                   const isOwner =
                     adminEmail.toLowerCase() === SUPER_ADMIN_EMAIL;
+                  const isCurrentSession =
+                    user.email.toLowerCase() === adminEmail.toLowerCase();
                   return (
                     <div
                       key={adminEmail}
                       className="px-3.5 py-2.5 flex items-center justify-between gap-2 bg-white hover:bg-zinc-50 text-xs"
                     >
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <Shield className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
                         <span className="font-semibold text-zinc-900">
                           {adminEmail}
@@ -827,25 +878,47 @@ export default function AdminDashboardPage() {
                           </span>
                         )}
                       </div>
-                      {isOwner ? (
-                        <span className="text-[11px] text-zinc-400 flex items-center gap-1">
-                          <Lock className="w-3 h-3" /> Permanent
-                        </span>
-                      ) : (
-                        <button
-                          onClick={() => handleRemoveAdminEmail(adminEmail)}
-                          disabled={!userIsSuperAdmin}
-                          title={
-                            userIsSuperAdmin
-                              ? "Revoke admin permissions"
-                              : `Only ${SUPER_ADMIN_EMAIL} can revoke admins`
-                          }
-                          className="text-red-600 hover:text-red-800 font-semibold flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                          <span>Revoke</span>
-                        </button>
-                      )}
+                      <div className="flex items-center gap-2.5">
+                        {isCurrentSession ? (
+                          <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-bold">
+                            Active Session
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              switchDevPersona(adminEmail);
+                              showToast(
+                                "success",
+                                `Switched active preview session to ${adminEmail} (Admin).`
+                              );
+                            }}
+                            className="px-2 py-0.5 rounded bg-zinc-100 hover:bg-indigo-50 text-zinc-700 hover:text-indigo-700 border border-zinc-200 text-[10px] font-semibold cursor-pointer"
+                            title="Preview the portal as this administrator"
+                          >
+                            Test as User
+                          </button>
+                        )}
+                        {isOwner ? (
+                          <span className="text-[11px] text-zinc-400 flex items-center gap-1">
+                            <Lock className="w-3 h-3" /> Permanent
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => handleRemoveAdminEmail(adminEmail)}
+                            disabled={!userIsSuperAdmin}
+                            title={
+                              userIsSuperAdmin
+                                ? "Revoke admin permissions"
+                                : `Only ${SUPER_ADMIN_EMAIL} can revoke admins`
+                            }
+                            className="text-red-600 hover:text-red-800 font-semibold flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Revoke</span>
+                          </button>
+                        )}
+                      </div>
                     </div>
                   );
                 })}

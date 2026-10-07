@@ -32,7 +32,12 @@ import {
 import {
   CUSTOM_CLIENT_SECRET_STORAGE_KEY,
   getActiveAzureClientSecret,
+  isEmailInAdminAllowlist,
 } from "@/lib/auth-config";
+import {
+  getAdminSettings,
+  subscribeToAdminSettings,
+} from "@/lib/admin-settings";
 import Link from "next/link";
 
 interface DevAuthBannerProps {
@@ -67,19 +72,29 @@ export const DevAuthBanner: React.FC<DevAuthBannerProps> = ({
   const [keySavedBanner, setKeySavedBanner] = useState<boolean>(false);
   const [secretSavedBanner, setSecretSavedBanner] = useState<boolean>(false);
   const [isSendingTest, setIsSendingTest] = useState<boolean>(false);
+  const [adminEmailsList, setAdminEmailsList] = useState<string[]>(
+    () => getAdminSettings().permissions.adminEmails
+  );
 
   useEffect(() => {
     setEmails(getDispatchedEmails());
     setResendKeyInput(getStoredResendApiKey());
     setAzureSecretInput(getActiveAzureClientSecret());
     setHasMsGraphToken(Boolean(getStoredMsGraphToken()));
-    return subscribeToEmails((updated, newlyDispatched) => {
+    const unsubEmails = subscribeToEmails((updated, newlyDispatched) => {
       setEmails(updated);
       setHasMsGraphToken(Boolean(getStoredMsGraphToken()));
       if (newlyDispatched) {
         setLatestToastEmail(newlyDispatched);
       }
     });
+    const unsubAdmin = subscribeToAdminSettings((s) => {
+      setAdminEmailsList(s.permissions.adminEmails);
+    });
+    return () => {
+      unsubEmails();
+      unsubAdmin();
+    };
   }, []);
 
   const handleSaveResendKey = async (e: React.FormEvent) => {
@@ -478,27 +493,47 @@ export const DevAuthBanner: React.FC<DevAuthBannerProps> = ({
             <span className="text-zinc-400 hidden sm:inline">
               Switch UIUC Persona:
             </span>
-            {DEV_PERSONAS.map((p) => {
-              const active = currentUser?.id === p.id;
+            {[
+              ...DEV_PERSONAS,
+              ...adminEmailsList
+                .filter(
+                  (em) =>
+                    !DEV_PERSONAS.some(
+                      (p) => p.email.toLowerCase() === em.toLowerCase()
+                    )
+                )
+                .map((em) => ({
+                  id: em.toLowerCase(),
+                  name: em.split("@")[0],
+                  email: em.toLowerCase(),
+                  role: "admin" as const,
+                })),
+            ].map((p) => {
+              const active =
+                currentUser?.id === p.id ||
+                currentUser?.email.toLowerCase() === p.email.toLowerCase();
+              const liveRole = isEmailInAdminAllowlist(p.email)
+                ? "admin"
+                : "user";
               return (
                 <button
                   key={p.id}
-                  onClick={() => onSwitchPersona(p.id)}
+                  onClick={() => onSwitchPersona(p.email)}
                   className={`px-2.5 py-1 rounded-md font-medium flex items-center gap-1.5 transition-all cursor-pointer ${
                     active
-                      ? p.role === "admin"
+                      ? liveRole === "admin"
                         ? "bg-indigo-600 text-white shadow-2xs ring-1 ring-indigo-400"
                         : "bg-orange-600 text-white shadow-2xs ring-1 ring-orange-400"
                       : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
                   }`}
                 >
-                  {p.role === "admin" ? (
+                  {liveRole === "admin" ? (
                     <Shield className="w-3 h-3" />
                   ) : (
                     <UserCheck className="w-3 h-3" />
                   )}
                   <span>{p.email.split("@")[0]}</span>
-                  <span className="text-[10px] opacity-75">({p.role})</span>
+                  <span className="text-[10px] opacity-75">({liveRole})</span>
                 </button>
               );
             })}

@@ -13,6 +13,7 @@ import {
 } from "@/lib/auth-config";
 import { UserProfile, UserRole } from "@/lib/types";
 import { setStoredMsGraphToken } from "@/lib/email";
+import { syncAdminSettingsFromCloud } from "@/lib/admin-settings";
 
 export const MSAL_AUTH_PROFILE_KEY = "bambu_x1c_authenticated_msal_user";
 export const PKCE_VERIFIER_KEY = "bambu_x1c_pkce_verifier";
@@ -276,6 +277,7 @@ export const MsalRootProvider: React.FC<{ children: React.ReactNode }> = ({
               if (resolvedData.access_token) {
                 setStoredMsGraphToken(resolvedData.access_token);
               }
+              await syncAdminSettingsFromCloud();
               const email = String(resolvedData.email || "").toLowerCase();
               if (!isValidUiucEmail(email)) {
                 setMsalError(

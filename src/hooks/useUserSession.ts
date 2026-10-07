@@ -25,6 +25,23 @@ import {
 const DEV_PERSONA_STORAGE_KEY = "bambu_x1c_dev_persona_id";
 const ROLE_OVERRIDE_STORAGE_KEY = "bambu_x1c_role_override";
 
+function getRoleOverrideForEmail(email: string): UserRole | null {
+  if (typeof window === "undefined" || !email) return null;
+  return window.localStorage.getItem(
+    `${ROLE_OVERRIDE_STORAGE_KEY}_${email.trim().toLowerCase()}`
+  ) as UserRole | null;
+}
+
+function setRoleOverrideForEmail(email: string, role: UserRole | null) {
+  if (typeof window === "undefined" || !email) return;
+  const key = `${ROLE_OVERRIDE_STORAGE_KEY}_${email.trim().toLowerCase()}`;
+  if (role) {
+    window.localStorage.setItem(key, role);
+  } else {
+    window.localStorage.removeItem(key);
+  }
+}
+
 type SessionListener = (
   user: UserProfile | null,
   domainError: string | null
@@ -35,7 +52,9 @@ let currentCachedUser: UserProfile | null = null;
 let currentDomainError: string | null = null;
 
 function notifySessionListeners() {
-  sessionListeners.forEach((fn) => fn(currentCachedUser, currentDomainError));
+  sessionListeners.forEach((fn) =>
+    fn(currentCachedUser ? { ...currentCachedUser } : null, currentDomainError)
+  );
 }
 
 // Generate cryptographic PKCE code_verifier & S256 code_challenge in browser
@@ -92,23 +111,34 @@ export function useUserSession() {
         currentCachedUser.email
       );
       if (!isAuthorizedAdmin) {
-        if (currentCachedUser.role !== "user") {
-          currentCachedUser = { ...currentCachedUser, role: "user" };
-          notifySessionListeners();
+        setRoleOverrideForEmail(currentCachedUser.email, null);
+        currentCachedUser = { ...currentCachedUser, role: "user" };
+        if (
+          typeof window !== "undefined" &&
+          window.localStorage.getItem(MSAL_AUTH_PROFILE_KEY)
+        ) {
+          window.localStorage.setItem(
+            MSAL_AUTH_PROFILE_KEY,
+            JSON.stringify(currentCachedUser)
+          );
         }
+        notifySessionListeners();
         return;
       }
-      const roleOverride =
-        typeof window !== "undefined"
-          ? (window.localStorage.getItem(
-              ROLE_OVERRIDE_STORAGE_KEY
-            ) as UserRole | null)
-          : null;
+
+      const roleOverride = getRoleOverrideForEmail(currentCachedUser.email);
       const nextRole: UserRole = roleOverride === "user" ? "user" : "admin";
-      if (currentCachedUser.role !== nextRole) {
-        currentCachedUser = { ...currentCachedUser, role: nextRole };
-        notifySessionListeners();
+      currentCachedUser = { ...currentCachedUser, role: nextRole };
+      if (
+        typeof window !== "undefined" &&
+        window.localStorage.getItem(MSAL_AUTH_PROFILE_KEY)
+      ) {
+        window.localStorage.setItem(
+          MSAL_AUTH_PROFILE_KEY,
+          JSON.stringify(currentCachedUser)
+        );
       }
+      notifySessionListeners();
     });
   }, []);
 
@@ -122,12 +152,7 @@ export function useUserSession() {
     // 1. Check if authenticated via real Microsoft OAuth2 PKCE flow
     if (oauthProfile) {
       const isAuthorizedAdmin = isEmailInAdminAllowlist(oauthProfile.email);
-      const roleOverride =
-        typeof window !== "undefined"
-          ? (window.localStorage.getItem(
-              ROLE_OVERRIDE_STORAGE_KEY
-            ) as UserRole | null)
-          : null;
+      const roleOverride = getRoleOverrideForEmail(oauthProfile.email);
 
       const resolvedRole: UserRole = isAuthorizedAdmin
         ? roleOverride === "user"
@@ -172,9 +197,7 @@ export function useUserSession() {
         try {
           const parsed = JSON.parse(savedMsalRaw) as UserProfile;
           const isAuthorizedAdmin = isEmailInAdminAllowlist(parsed.email);
-          const roleOverride = window.localStorage.getItem(
-            ROLE_OVERRIDE_STORAGE_KEY
-          ) as UserRole | null;
+          const roleOverride = getRoleOverrideForEmail(parsed.email);
           const resolvedRole: UserRole = isAuthorizedAdmin
             ? roleOverride === "user"
               ? "user"
@@ -193,18 +216,32 @@ export function useUserSession() {
 
       const savedId = window.localStorage.getItem(DEV_PERSONA_STORAGE_KEY);
       if (savedId && savedId !== "SIGNED_OUT") {
-        const found = DEV_PERSONAS.find((p) => p.id === savedId);
+        const found = DEV_PERSONAS.find(
+          (p) => p.id === savedId || p.email.toLowerCase() === savedId.toLowerCase()
+        );
         if (found) {
           const isAuthorizedAdmin = isEmailInAdminAllowlist(found.email);
-          const roleOverride = window.localStorage.getItem(
-            ROLE_OVERRIDE_STORAGE_KEY
-          ) as UserRole | null;
+          const roleOverride = getRoleOverrideForEmail(found.email);
           const resolvedRole: UserRole = isAuthorizedAdmin
             ? roleOverride === "user"
               ? "user"
               : "admin"
             : "user";
           currentCachedUser = { ...found, role: resolvedRole };
+          notifySessionListeners();
+        } else if (savedId.includes("@")) {
+          const cleanEmail = savedId.trim().toLowerCase();
+          const isAuthorizedAdmin = isEmailInAdminAllowlist(cleanEmail);
+          const roleOverride = getRoleOverrideForEmail(cleanEmail);
+          currentCachedUser = {
+            id: `user-${cleanEmail}`,
+            microsoft_oid: `oid-${cleanEmail}`,
+            email: cleanEmail,
+            full_name: cleanEmail.split("@")[0],
+            role:
+              isAuthorizedAdmin && roleOverride !== "user" ? "admin" : "user",
+            created_at: new Date().toISOString(),
+          };
           notifySessionListeners();
         }
       }
@@ -281,10 +318,15 @@ export function useUserSession() {
     await signInWithMicrosoft(undefined, undefined, true);
   }, [signInWithMicrosoft]);
 
-  const switchDevPersona = useCallback((personaId: string) => {
-    const found = DEV_PERSONAS.find((p) => p.id === personaId);
+  const switchDevPersona = useCallback((personaIdOrEmail: string) => {
+    const found = DEV_PERSONAS.find(
+      (p) =>
+        p.id === personaIdOrEmail ||
+        p.email.toLowerCase() === personaIdOrEmail.toLowerCase()
+    );
     if (found) {
       const isAuthorizedAdmin = isEmailInAdminAllowlist(found.email);
+      setRoleOverrideForEmail(found.email, null);
       currentCachedUser = {
         ...found,
         role: isAuthorizedAdmin ? "admin" : "user",
@@ -292,7 +334,28 @@ export function useUserSession() {
       currentDomainError = null;
       if (typeof window !== "undefined") {
         window.localStorage.setItem(DEV_PERSONA_STORAGE_KEY, found.id);
-        window.localStorage.removeItem(ROLE_OVERRIDE_STORAGE_KEY);
+        window.localStorage.removeItem(MSAL_AUTH_PROFILE_KEY);
+      }
+      notifySessionListeners();
+      return;
+    }
+
+    if (personaIdOrEmail.includes("@")) {
+      const cleanEmail = personaIdOrEmail.trim().toLowerCase();
+      const isAuthorizedAdmin = isEmailInAdminAllowlist(cleanEmail);
+      setRoleOverrideForEmail(cleanEmail, null);
+      currentCachedUser = {
+        id: `user-${cleanEmail}`,
+        microsoft_oid: `oid-${cleanEmail}`,
+        email: cleanEmail,
+        full_name: cleanEmail.split("@")[0],
+        role: isAuthorizedAdmin ? "admin" : "user",
+        created_at: new Date().toISOString(),
+      };
+      currentDomainError = null;
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(DEV_PERSONA_STORAGE_KEY, cleanEmail);
+        window.localStorage.removeItem(MSAL_AUTH_PROFILE_KEY);
       }
       notifySessionListeners();
     }
@@ -309,14 +372,18 @@ export function useUserSession() {
       ...currentCachedUser,
       role: nextRole,
     };
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(ROLE_OVERRIDE_STORAGE_KEY, nextRole);
-      if (window.localStorage.getItem(MSAL_AUTH_PROFILE_KEY)) {
-        window.localStorage.setItem(
-          MSAL_AUTH_PROFILE_KEY,
-          JSON.stringify(currentCachedUser)
-        );
-      }
+    setRoleOverrideForEmail(
+      currentCachedUser.email,
+      nextRole === "user" ? "user" : null
+    );
+    if (
+      typeof window !== "undefined" &&
+      window.localStorage.getItem(MSAL_AUTH_PROFILE_KEY)
+    ) {
+      window.localStorage.setItem(
+        MSAL_AUTH_PROFILE_KEY,
+        JSON.stringify(currentCachedUser)
+      );
     }
     notifySessionListeners();
   }, []);
@@ -328,6 +395,7 @@ export function useUserSession() {
       return;
     }
     const isAuthorizedAdmin = isEmailInAdminAllowlist(profile.email);
+    setRoleOverrideForEmail(profile.email, null);
     currentCachedUser = {
       ...profile,
       role: isAuthorizedAdmin ? "admin" : "user",
@@ -335,7 +403,6 @@ export function useUserSession() {
     currentDomainError = null;
     if (typeof window !== "undefined") {
       window.localStorage.setItem(DEV_PERSONA_STORAGE_KEY, profile.id);
-      window.localStorage.removeItem(ROLE_OVERRIDE_STORAGE_KEY);
     }
     notifySessionListeners();
   }, []);
@@ -356,6 +423,9 @@ export function useUserSession() {
   const signOut = useCallback(async () => {
     if (isSupabaseConfigured && supabase) {
       await supabase.auth.signOut();
+    }
+    if (currentCachedUser) {
+      setRoleOverrideForEmail(currentCachedUser.email, null);
     }
     currentCachedUser = null;
     clearOauthProfile();

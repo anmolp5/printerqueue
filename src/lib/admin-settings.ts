@@ -215,13 +215,28 @@ const settingsListeners = new Set<SettingsListener>();
 
 let cachedSettings: AdminSettings | null = null;
 
+// Shared Cloud Sync Endpoints (CORS-enabled for static GitHub Pages & localhost)
+const CLOUD_SETTINGS_OBJECT_URL =
+  "https://api.restful-api.dev/objects/ff808181a09d98f701a117663a7a18ed";
+const CLOUD_SETTINGS_NTFY_TOPIC = "https://ntfy.sh/uiuc_bambu_x1c_settings_v2";
+
+function isBrowserRuntime(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof process !== "undefined" &&
+    !process.env.VITEST
+  );
+}
+
 function ensureSuperAdminProtected(settings: AdminSettings): AdminSettings {
   const normalizedAdmins = Array.from(
     new Set([
       SUPER_ADMIN_EMAIL,
-      ...(settings.permissions?.adminEmails || []).map((e) =>
-        e.trim().toLowerCase()
-      ),
+      ...(settings.permissions?.adminEmails || []).map((e) => {
+        const clean = e.trim().toLowerCase();
+        if (!clean) return "";
+        return clean.includes("@") ? clean : `${clean}@illinois.edu`;
+      }),
     ])
   ).filter(Boolean);
 
@@ -257,6 +272,36 @@ export function isSuperAdmin(email: string | null | undefined): boolean {
   return email.trim().toLowerCase() === SUPER_ADMIN_EMAIL;
 }
 
+function mergePartialAdminSettings(
+  parsed: Partial<AdminSettings>
+): AdminSettings {
+  const defaults = createDefaultAdminSettings();
+  return ensureSuperAdminProtected({
+    permissions: {
+      ...defaults.permissions,
+      ...(parsed.permissions || {}),
+    },
+    bookingLimits: {
+      ...defaults.bookingLimits,
+      ...(parsed.bookingLimits || {}),
+      operatingHours: {
+        ...defaults.bookingLimits.operatingHours,
+        ...(parsed.bookingLimits?.operatingHours || {}),
+      },
+    },
+    emailTemplates: {
+      ...defaults.emailTemplates,
+      ...(parsed.emailTemplates || {}),
+    },
+    labProfile: {
+      ...defaults.labProfile,
+      ...(parsed.labProfile || {}),
+    },
+    updatedAt: parsed.updatedAt || defaults.updatedAt,
+    updatedBy: parsed.updatedBy,
+  });
+}
+
 export function getAdminSettings(): AdminSettings {
   if (typeof window === "undefined") {
     return cachedSettings || createDefaultAdminSettings();
@@ -266,6 +311,8 @@ export function getAdminSettings(): AdminSettings {
     const raw = window.localStorage.getItem(ADMIN_SETTINGS_STORAGE_KEY);
     if (!raw) {
       const defaults = createDefaultAdminSettings();
+      // Mark initial local defaults with epoch 0 so cloud settings always win on first load
+      defaults.updatedAt = new Date(0).toISOString();
       cachedSettings = defaults;
       window.localStorage.setItem(
         ADMIN_SETTINGS_STORAGE_KEY,
@@ -275,38 +322,143 @@ export function getAdminSettings(): AdminSettings {
     }
 
     const parsed = JSON.parse(raw) as Partial<AdminSettings>;
-    const defaults = createDefaultAdminSettings();
-
-    const merged: AdminSettings = ensureSuperAdminProtected({
-      permissions: {
-        ...defaults.permissions,
-        ...(parsed.permissions || {}),
-      },
-      bookingLimits: {
-        ...defaults.bookingLimits,
-        ...(parsed.bookingLimits || {}),
-        operatingHours: {
-          ...defaults.bookingLimits.operatingHours,
-          ...(parsed.bookingLimits?.operatingHours || {}),
-        },
-      },
-      emailTemplates: {
-        ...defaults.emailTemplates,
-        ...(parsed.emailTemplates || {}),
-      },
-      labProfile: {
-        ...defaults.labProfile,
-        ...(parsed.labProfile || {}),
-      },
-      updatedAt: parsed.updatedAt || defaults.updatedAt,
-      updatedBy: parsed.updatedBy,
-    });
-
+    const merged = mergePartialAdminSettings(parsed);
     cachedSettings = merged;
     return merged;
   } catch {
     return createDefaultAdminSettings();
   }
+}
+
+async function pushAdminSettingsToCloud(settings: AdminSettings): Promise<void> {
+  if (!isBrowserRuntime()) return;
+
+  // 1. Primary persistent JSON cloud store
+  try {
+    await fetch(CLOUD_SETTINGS_OBJECT_URL, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "bambu_x1c_admin_settings_v1",
+        data: settings,
+      }),
+    });
+  } catch {
+    // ignore network error
+  }
+
+  // 2. Secondary CORS-simple pub/sub channel (compact permissions + limits + profile)
+  try {
+    const compactPayload = {
+      permissions: settings.permissions,
+      bookingLimits: settings.bookingLimits,
+      labProfile: settings.labProfile,
+      updatedAt: settings.updatedAt,
+      updatedBy: settings.updatedBy,
+    };
+    await fetch(CLOUD_SETTINGS_NTFY_TOPIC, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify(compactPayload),
+    });
+  } catch {
+    // ignore network error
+  }
+}
+
+export async function syncAdminSettingsFromCloud(): Promise<AdminSettings> {
+  const local = getAdminSettings();
+  if (!isBrowserRuntime()) return local;
+
+  let newestCloud: Partial<AdminSettings> | null = null;
+
+  // 1. Try primary persistent cloud object
+  try {
+    const res = await fetch(CLOUD_SETTINGS_OBJECT_URL, {
+      method: "GET",
+      cache: "no-store",
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json && json.data && json.data.permissions) {
+        newestCloud = json.data as Partial<AdminSettings>;
+      }
+    }
+  } catch {
+    // fallback to ntfy below
+  }
+
+  // 2. Also check ntfy pub/sub history in case a recent update was published
+  try {
+    const res = await fetch(`${CLOUD_SETTINGS_NTFY_TOPIC}/json?poll=1`, {
+      method: "GET",
+      cache: "no-store",
+    });
+    if (res.ok) {
+      const text = await res.text();
+      const lines = text.trim().split("\n").filter(Boolean);
+      for (let i = lines.length - 1; i >= 0; i--) {
+        try {
+          const event = JSON.parse(lines[i]);
+          if (event.event === "message" && event.message) {
+            const parsedMsg = JSON.parse(event.message) as Partial<AdminSettings>;
+            if (parsedMsg && parsedMsg.permissions) {
+              const msgTime = parsedMsg.updatedAt
+                ? new Date(parsedMsg.updatedAt).getTime()
+                : 0;
+              const currentCloudTime = newestCloud?.updatedAt
+                ? new Date(newestCloud.updatedAt).getTime()
+                : 0;
+              if (msgTime > currentCloudTime) {
+                newestCloud = {
+                  ...(newestCloud || local),
+                  ...parsedMsg,
+                };
+              }
+              break;
+            }
+          }
+        } catch {
+          // ignore malformed line
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  if (newestCloud) {
+    const mergedCloud = mergePartialAdminSettings({
+      ...local,
+      ...newestCloud,
+      emailTemplates: {
+        ...local.emailTemplates,
+        ...(newestCloud.emailTemplates || {}),
+      },
+    });
+
+    const localTime = local.updatedAt ? new Date(local.updatedAt).getTime() : 0;
+    const cloudTime = mergedCloud.updatedAt
+      ? new Date(mergedCloud.updatedAt).getTime()
+      : 0;
+
+    const localAdminsKey = [...local.permissions.adminEmails].sort().join(",");
+    const cloudAdminsKey = [...mergedCloud.permissions.adminEmails]
+      .sort()
+      .join(",");
+
+    if (cloudTime >= localTime || localAdminsKey !== cloudAdminsKey) {
+      cachedSettings = mergedCloud;
+      window.localStorage.setItem(
+        ADMIN_SETTINGS_STORAGE_KEY,
+        JSON.stringify(mergedCloud)
+      );
+      settingsListeners.forEach((fn) => fn(mergedCloud));
+      return mergedCloud;
+    }
+  }
+
+  return local;
 }
 
 export function saveAdminSettings(
@@ -349,6 +501,9 @@ export function saveAdminSettings(
 
   settingsListeners.forEach((fn) => fn(sanitized));
 
+  // Push to shared cloud storage so all other users/browsers immediately receive the update
+  pushAdminSettingsToCloud(sanitized);
+
   // Optional Supabase sync if configured
   if (isSupabaseConfigured && supabase) {
     supabase
@@ -377,6 +532,8 @@ export function resetAdminSettingsToDefaults(
   return res.data;
 }
 
+let cloudPollInterval: ReturnType<typeof setInterval> | null = null;
+
 export function subscribeToAdminSettings(
   listener: SettingsListener
 ): () => void {
@@ -388,14 +545,35 @@ export function subscribeToAdminSettings(
     }
   };
 
+  const handleFocus = () => {
+    syncAdminSettingsFromCloud();
+  };
+
   if (typeof window !== "undefined") {
     window.addEventListener("storage", handleStorage);
+    window.addEventListener("focus", handleFocus);
+
+    // Trigger immediate cloud sync on subscription
+    syncAdminSettingsFromCloud();
+
+    if (!cloudPollInterval && isBrowserRuntime()) {
+      cloudPollInterval = setInterval(() => {
+        if (settingsListeners.size > 0) {
+          syncAdminSettingsFromCloud();
+        }
+      }, 6000);
+    }
   }
 
   return () => {
     settingsListeners.delete(listener);
     if (typeof window !== "undefined") {
       window.removeEventListener("storage", handleStorage);
+      window.removeEventListener("focus", handleFocus);
+    }
+    if (settingsListeners.size === 0 && cloudPollInterval) {
+      clearInterval(cloudPollInterval);
+      cloudPollInterval = null;
     }
   };
 }
