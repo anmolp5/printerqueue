@@ -118,18 +118,42 @@ export const loginRequest = {
   prompt: "select_account",
 };
 
+import { getAdminSettings } from "./admin-settings";
+
 export function isValidUiucEmail(email: string | null | undefined): boolean {
   if (!email) return false;
-  return email.trim().toLowerCase().endsWith("@illinois.edu");
+  const cleaned = email.trim().toLowerCase();
+  const atIndex = cleaned.lastIndexOf("@");
+  if (atIndex === -1) return false;
+  const domain = cleaned.slice(atIndex + 1);
+  const settings = getAdminSettings();
+  const allowedDomains = settings.permissions.allowedDomains || ["illinois.edu"];
+  return allowedDomains.some((d) => d.trim().toLowerCase() === domain);
+}
+
+export function isUserBanned(email: string | null | undefined): boolean {
+  if (!email) return false;
+  const cleaned = email.trim().toLowerCase();
+  const settings = getAdminSettings();
+  return settings.permissions.bannedEmails.some(
+    (b) => b.trim().toLowerCase() === cleaned
+  );
 }
 
 export function isEmailInAdminAllowlist(email: string): boolean {
+  const cleaned = email.trim().toLowerCase();
   const raw =
     process.env.NEXT_PUBLIC_ADMIN_EMAILS ||
     "admin@illinois.edu,anmolp5@illinois.edu";
-  const list = raw
+  const envList = raw
     .split(",")
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
-  return list.includes(email.trim().toLowerCase());
+
+  const settings = getAdminSettings();
+  const dynamicList = (settings.permissions.adminEmails || []).map((s) =>
+    s.trim().toLowerCase()
+  );
+
+  return envList.includes(cleaned) || dynamicList.includes(cleaned);
 }

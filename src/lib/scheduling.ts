@@ -1,4 +1,5 @@
 import { CalendarBooking } from "./types";
+import { getAdminSettings } from "./admin-settings";
 
 export const MANDATORY_BUFFER_MINUTES = 10;
 export const SLOT_INCREMENT_MINUTES = 15;
@@ -6,6 +7,15 @@ export const SLOT_INCREMENT_MINUTES = 15;
 export const MAX_DURATION_MINUTES = Number(
   process.env.NEXT_PUBLIC_MAX_DURATION_MINUTES || 480
 );
+
+export function getActiveMaxDurationMinutes(): number {
+  return getAdminSettings().bookingLimits.maxDurationMinutes || MAX_DURATION_MINUTES;
+}
+
+export function getActiveBufferMinutes(): number {
+  const val = getAdminSettings().bookingLimits.cooldownBufferMinutes;
+  return typeof val === "number" && val >= 0 ? val : MANDATORY_BUFFER_MINUTES;
+}
 
 /**
  * Checks whether a Date falls cleanly on a 15-minute boundary (:00, :15, :30, :45)
@@ -189,13 +199,14 @@ export function evaluateLateArrival(
     };
   }
 
-  // If no subsequent booking (or not colliding yet), check 15-minute grace reminder
-  const fifteenMinsAfterStart = startMs + 15 * 60 * 1000;
-  if (!nextBookingStartTime && nowMs >= fifteenMinsAfterStart && !booking.late_warned) {
+  // If no subsequent booking (or not colliding yet), check grace period reminder
+  const graceMins =
+    getAdminSettings().bookingLimits.lateArrivalGraceMinutes ?? 15;
+  const graceAfterStart = startMs + graceMins * 60 * 1000;
+  if (!nextBookingStartTime && nowMs >= graceAfterStart && !booking.late_warned) {
     return {
       action: "warn_15m",
-      reason:
-        "15 minutes past scheduled start time with no subsequent booking; sending reminder warning.",
+      reason: `${graceMins} minutes past scheduled start time with no subsequent booking; sending reminder warning.`,
     };
   }
 

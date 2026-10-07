@@ -15,9 +15,9 @@ import {
   Mail,
 } from "lucide-react";
 import {
-  MANDATORY_BUFFER_MINUTES,
-  MAX_DURATION_MINUTES,
   calculateEndTime,
+  getActiveBufferMinutes,
+  getActiveMaxDurationMinutes,
   getCurrentSlotFloor,
   isSlotBeforeCurrentPeriod,
   snapTo15MinSlot,
@@ -82,6 +82,9 @@ export const BookingModal: React.FC<BookingModalProps> = ({
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  const activeMaxDuration = getActiveMaxDurationMinutes();
+  const activeBuffer = getActiveBufferMinutes();
+
   useEffect(() => {
     if (isOpen && initialSlotTime) {
       setFileName("");
@@ -103,7 +106,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
   const isDurationValid =
     Number.isFinite(parsedDuration) &&
     parsedDuration > 0 &&
-    parsedDuration <= MAX_DURATION_MINUTES;
+    parsedDuration <= activeMaxDuration;
 
   const parsedReminder =
     !reminderEnabled || reminderInput.trim() === ""
@@ -124,7 +127,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
   const endTime = calculateEndTime(
     selectedDate,
     previewDuration,
-    MANDATORY_BUFFER_MINUTES
+    activeBuffer
   );
   const printFinishTime = new Date(
     selectedDate.getTime() + previewDuration * 60 * 1000
@@ -152,7 +155,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
 
     if (!isDurationValid) {
       setError(
-        `Please enter a valid print duration between 1 and ${MAX_DURATION_MINUTES} minutes.`
+        `Please enter a valid print duration between 1 and ${activeMaxDuration} minutes.`
       );
       return;
     }
@@ -199,7 +202,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
               Reserve Bambu Lab X1C Slot
             </h2>
             <p className="text-xs text-zinc-400 mt-0.5">
-              15-minute grid intervals • Mandatory 10-minute post-print buffer
+              15-minute grid intervals • Mandatory {activeBuffer}-minute post-print buffer
             </p>
           </div>
           <button
@@ -282,7 +285,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
                 Estimated Print Duration (Minutes)
               </label>
               <span className="text-xs text-zinc-400">
-                Max {MAX_DURATION_MINUTES}m ({MAX_DURATION_MINUTES / 60}h)
+                Max {activeMaxDuration}m ({activeMaxDuration / 60}h)
               </span>
             </div>
 
@@ -308,9 +311,9 @@ export const BookingModal: React.FC<BookingModalProps> = ({
                 />
               </div>
               <span className="text-xs font-medium text-zinc-500 shrink-0">
-                + 10m buffer ={" "}
+                + {activeBuffer}m buffer ={" "}
                 <strong className="text-zinc-900">
-                  {previewDuration + 10}m total
+                  {previewDuration + activeBuffer}m total
                 </strong>
               </span>
             </div>
@@ -321,7 +324,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
                 <span>
                   {parsedDuration <= 0
                     ? "Duration must be greater than 0 minutes."
-                    : `Duration cannot exceed ${MAX_DURATION_MINUTES} minutes.`}
+                    : `Duration cannot exceed ${activeMaxDuration} minutes.`}
                 </span>
               </div>
             )}

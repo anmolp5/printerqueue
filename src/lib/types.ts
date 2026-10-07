@@ -66,3 +66,49 @@ export interface DispatchedEmail {
     | "error";
   deliveryMessage?: string;
 }
+
+export interface EmailTemplateConfig {
+  subject: string;
+  bodyTemplate: string;
+  enabled: boolean;
+}
+
+export interface AdminPermissionsConfig {
+  superAdminEmail: string;
+  adminEmails: string[];
+  bannedEmails: string[];
+  allowedDomains: string[];
+  maintenanceMode: boolean;
+  maintenanceMessage: string;
+}
+
+export interface AdminBookingLimitsConfig {
+  maxDurationMinutes: number;
+  minDurationMinutes: number;
+  maxActiveBookingsPerUser: number | null; // null = unlimited
+  cooldownBufferMinutes: number;
+  maxAdvanceBookingDays: number;
+  lateArrivalGraceMinutes: number;
+  operatingHours: {
+    enabled: boolean;
+    startHour: number; // 0-23
+    endHour: number; // 1-24
+  };
+}
+
+export interface AdminLabProfileConfig {
+  printerName: string;
+  location: string;
+  nozzleInfo: string;
+  supportedFilaments: string[];
+  notes: string;
+}
+
+export interface AdminSettings {
+  permissions: AdminPermissionsConfig;
+  bookingLimits: AdminBookingLimitsConfig;
+  emailTemplates: Record<EmailNotificationType, EmailTemplateConfig>;
+  labProfile: AdminLabProfileConfig;
+  updatedAt: string;
+  updatedBy?: string;
+}

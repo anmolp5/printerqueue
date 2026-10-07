@@ -7,8 +7,10 @@ import {
   getActiveAzureClientId,
   getActiveAzureTenantId,
   getAppBaseUrl,
+  isEmailInAdminAllowlist,
   isValidUiucEmail,
 } from "@/lib/auth-config";
+import { subscribeToAdminSettings } from "@/lib/admin-settings";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import {
   MSAL_AUTH_PROFILE_KEY,
@@ -82,6 +84,26 @@ export function useUserSession() {
       notifySessionListeners();
     }
   }, [msalError]);
+
+  useEffect(() => {
+    return subscribeToAdminSettings(() => {
+      if (!currentCachedUser) return;
+      const roleOverride =
+        typeof window !== "undefined"
+          ? (window.localStorage.getItem(
+              ROLE_OVERRIDE_STORAGE_KEY
+            ) as UserRole | null)
+          : null;
+      if (!roleOverride) {
+        const shouldBeAdmin = isEmailInAdminAllowlist(currentCachedUser.email);
+        const nextRole: UserRole = shouldBeAdmin ? "admin" : "user";
+        if (currentCachedUser.role !== nextRole) {
+          currentCachedUser = { ...currentCachedUser, role: nextRole };
+          notifySessionListeners();
+        }
+      }
+    });
+  }, []);
 
   useEffect(() => {
     const listener: SessionListener = (newUser, err) => {

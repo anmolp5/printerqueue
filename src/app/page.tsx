@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
+import Link from "next/link";
 import {
   startOfWeek,
   addDays,
@@ -20,6 +21,8 @@ import {
   LogOut,
   LogIn,
   ListFilter,
+  Sliders,
+  Wrench,
 } from "lucide-react";
 import { WeeklyCalendar } from "@/components/WeeklyCalendar";
 import { BookingModal } from "@/components/BookingModal";
@@ -41,8 +44,12 @@ import {
   checkAndDispatchScheduledReminders,
   resetDemoData,
 } from "@/lib/store";
+import {
+  getAdminSettings,
+  subscribeToAdminSettings,
+} from "@/lib/admin-settings";
 import { snapTo15MinSlot } from "@/lib/scheduling";
-import { BookingStatus, CalendarBooking } from "@/lib/types";
+import { AdminSettings, BookingStatus, CalendarBooking } from "@/lib/types";
 
 export default function HomePage() {
   const {
@@ -60,6 +67,9 @@ export default function HomePage() {
   } = useUserSession();
 
   const [bookings, setBookings] = useState<CalendarBooking[]>([]);
+  const [adminSettings, setAdminSettings] = useState<AdminSettings>(() =>
+    getAdminSettings()
+  );
   const [currentWeekStart, setCurrentWeekStart] = useState<Date>(() =>
     startOfWeek(new Date(), { weekStartsOn: 1 })
   );
@@ -74,10 +84,17 @@ export default function HomePage() {
   // Load initial bookings & subscribe to updates
   useEffect(() => {
     fetchBookings().then(setBookings);
-    const unsub = subscribeToBookings((updated) => {
+    const unsubBookings = subscribeToBookings((updated) => {
       setBookings(updated);
     });
-    return unsub;
+    setAdminSettings(getAdminSettings());
+    const unsubSettings = subscribeToAdminSettings((updated) => {
+      setAdminSettings(updated);
+    });
+    return () => {
+      unsubBookings();
+      unsubSettings();
+    };
   }, []);
 
   // Periodic 5-minute late-arrival check + 15-second pre-booking reminder & slot-start check
@@ -201,14 +218,20 @@ export default function HomePage() {
             <div>
               <div className="flex items-center gap-2.5">
                 <h1 className="text-base sm:text-lg font-bold tracking-tight">
-                  Bambu Lab X1C Queue &amp; Booking Portal
+                  {adminSettings.labProfile.printerName ||
+                    "Bambu Lab X1C Queue & Booking Portal"}
                 </h1>
                 <span className="hidden md:inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider bg-white/10 text-orange-300 border border-white/15">
                   UIUC @illinois.edu
                 </span>
               </div>
               <div className="flex items-center gap-3 text-xs text-slate-300 mt-0.5">
-                {activeJobNow ? (
+                {adminSettings.permissions.maintenanceMode ? (
+                  <span className="inline-flex items-center gap-1.5 text-amber-300 font-medium">
+                    <Wrench className="w-3.5 h-3.5 text-amber-400" />
+                    Maintenance Mode Active — New student bookings paused
+                  </span>
+                ) : activeJobNow ? (
                   <span className="inline-flex items-center gap-1.5 text-amber-300 font-medium">
                     <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
                     Printing: <strong>{activeJobNow.file_name}</strong> (until{" "}
@@ -226,8 +249,18 @@ export default function HomePage() {
             </div>
           </div>
 
-          {/* Right User Profile & Book Button */}
-          <div className="flex items-center gap-3">
+          {/* Right User Profile, Admin Dashboard Link & Book Button */}
+          <div className="flex items-center gap-2.5">
+            {isAdmin && (
+              <Link
+                href="/admin"
+                className="px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm border border-indigo-400/50 transition-colors"
+              >
+                <Sliders className="w-3.5 h-3.5" />
+                <span>Admin Dashboard</span>
+              </Link>
+            )}
+
             <button
               onClick={() => {
                 setSelectedSlotTime(snapTo15MinSlot(new Date(), true));
@@ -275,6 +308,31 @@ export default function HomePage() {
 
       {/* Main Content Container */}
       <main className="max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 space-y-5 flex-1">
+        {/* Maintenance Mode Alert Banner */}
+        {adminSettings.permissions.maintenanceMode && (
+          <div className="rounded-xl bg-amber-950 text-amber-100 border border-amber-700 p-4 shadow-md flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-3 text-xs">
+              <Wrench className="w-5 h-5 text-amber-400 shrink-0" />
+              <div>
+                <div className="font-bold text-sm text-amber-200">
+                  Printer Maintenance Mode Active
+                </div>
+                <p className="text-amber-100/90 mt-0.5">
+                  {adminSettings.permissions.maintenanceMessage}
+                </p>
+              </div>
+            </div>
+            {isAdmin && (
+              <Link
+                href="/admin"
+                className="px-3 py-1.5 rounded-lg bg-amber-700 hover:bg-amber-600 text-white text-xs font-bold shrink-0"
+              >
+                Manage in Admin Dashboard
+              </Link>
+            )}
+          </div>
+        )}
+
         {/* Domain Guard Rejection Alert */}
         {domainError && (
           <div className="rounded-xl bg-red-950 text-white border border-red-700 p-4 shadow-lg flex items-center justify-between gap-4">
@@ -304,10 +362,12 @@ export default function HomePage() {
             </div>
             <div className="text-xs">
               <div className="font-bold text-zinc-900">
-                15-Min Grid + 10-Min Buffer
+                15-Min Grid + {adminSettings.bookingLimits.cooldownBufferMinutes}-Min Buffer
               </div>
               <p className="text-zinc-500 mt-0.5">
-                Bookings snap to :00, :15, :30, :45 with an automatic 10-minute
+                Bookings snap to :00, :15, :30, :45 (up to{" "}
+                {adminSettings.bookingLimits.maxDurationMinutes}m max) with a{" "}
+                {adminSettings.bookingLimits.cooldownBufferMinutes}-minute
                 post-print cooldown buffer.
               </p>
             </div>
@@ -319,11 +379,15 @@ export default function HomePage() {
             </div>
             <div className="text-xs">
               <div className="font-bold text-zinc-900">
-                Late-Arrival Auto-Cancel
+                Late-Arrival Auto-Cancel ({adminSettings.bookingLimits.lateArrivalGraceMinutes}m Grace)
               </div>
               <p className="text-zinc-500 mt-0.5">
                 Unstarted jobs auto-cancel if remaining time before the next
-                slot is less than <code className="text-[11px]">duration + 10m</code>.
+                slot is less than{" "}
+                <code className="text-[11px]">
+                  duration + {adminSettings.bookingLimits.cooldownBufferMinutes}m
+                </code>
+                .
               </p>
             </div>
           </div>

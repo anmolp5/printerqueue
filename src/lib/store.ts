@@ -16,7 +16,12 @@ import {
   isValid15MinSlot,
   snapTo15MinSlot,
 } from "./scheduling";
-import { getAppBaseUrl, isValidUiucEmail } from "./auth-config";
+import {
+  getAppBaseUrl,
+  isUserBanned,
+  isValidUiucEmail,
+} from "./auth-config";
+import { getAdminSettings, renderEmailTemplate } from "./admin-settings";
 import { dispatchEmail } from "./email";
 import { isSupabaseConfigured, supabase } from "./supabase";
 
@@ -282,11 +287,43 @@ export async function createBooking(params: {
     reminder_minutes_before = 15,
   } = params;
 
-  // 1. Validate @illinois.edu domain
+  const settings = getAdminSettings();
+  const { permissions, bookingLimits } = settings;
+  const activeBuffer =
+    typeof bookingLimits.cooldownBufferMinutes === "number"
+      ? bookingLimits.cooldownBufferMinutes
+      : MANDATORY_BUFFER_MINUTES;
+  const activeMaxDuration =
+    bookingLimits.maxDurationMinutes || MAX_DURATION_MINUTES;
+  const activeMinDuration = bookingLimits.minDurationMinutes || 1;
+
+  // 1. Validate allowed domain
   if (!isValidUiucEmail(user.email)) {
+    const domainsLabel = permissions.allowedDomains
+      .map((d) => `@${d}`)
+      .join(", ");
     return {
-      error: "Access restricted: Only @illinois.edu emails can create reservations.",
+      error: `Access restricted: Only authorized domain emails (${domainsLabel}) can create reservations.`,
       code: "42501",
+    };
+  }
+
+  // 1b. Check if user is restricted/banned
+  if (isUserBanned(user.email)) {
+    return {
+      error:
+        "Access restricted: Your account has been temporarily restricted from creating reservations by a Lab Admin.",
+      code: "42501",
+    };
+  }
+
+  // 1c. Check Maintenance Mode (non-admins blocked when active)
+  if (permissions.maintenanceMode && user.role !== "admin") {
+    return {
+      error:
+        permissions.maintenanceMessage ||
+        "The printer queue is currently paused for scheduled maintenance.",
+      code: "50300",
     };
   }
 
@@ -307,12 +344,49 @@ export async function createBooking(params: {
     };
   }
 
+  // 2c. Validate advance booking horizon for non-admins
+  if (
+    user.role !== "admin" &&
+    bookingLimits.maxAdvanceBookingDays &&
+    bookingLimits.maxAdvanceBookingDays > 0
+  ) {
+    const maxFutureMs =
+      Date.now() + bookingLimits.maxAdvanceBookingDays * 24 * 60 * 60 * 1000;
+    if (start_time.getTime() > maxFutureMs) {
+      return {
+        error: `Reservations can only be scheduled up to ${bookingLimits.maxAdvanceBookingDays} days in advance.`,
+        code: "22023",
+      };
+    }
+  }
+
+  // 2d. Validate operating hours if enabled
+  if (user.role !== "admin" && bookingLimits.operatingHours?.enabled) {
+    const { startHour, endHour } = bookingLimits.operatingHours;
+    const hr = start_time.getHours();
+    if (hr < startHour || hr >= endHour) {
+      return {
+        error: `Lab operating hours are ${String(startHour).padStart(
+          2,
+          "0"
+        )}:00 to ${String(endHour).padStart(
+          2,
+          "0"
+        )}:00. Please select a start time within operating hours.`,
+        code: "22023",
+      };
+    }
+  }
+
   // 3. Validate duration limits
-  if (duration_minutes <= 0 || duration_minutes > MAX_DURATION_MINUTES) {
+  if (
+    duration_minutes < activeMinDuration ||
+    duration_minutes > activeMaxDuration
+  ) {
     return {
-      error: `Print duration must be between 1 and ${MAX_DURATION_MINUTES} minutes (${
-        MAX_DURATION_MINUTES / 60
-      } hours).`,
+      error: `Print duration must be between ${activeMinDuration} and ${activeMaxDuration} minutes (${(
+        activeMaxDuration / 60
+      ).toFixed(1)} hours).`,
       code: "22023",
     };
   }
@@ -320,7 +394,7 @@ export async function createBooking(params: {
   const end_time = calculateEndTime(
     start_time,
     duration_minutes,
-    MANDATORY_BUFFER_MINUTES
+    activeBuffer
   );
 
   // If Supabase is active
@@ -332,7 +406,7 @@ export async function createBooking(params: {
         user_email: user.email,
         file_name: file_name.trim(),
         duration_minutes,
-        buffer_minutes: MANDATORY_BUFFER_MINUTES,
+        buffer_minutes: activeBuffer,
         start_time: start_time.toISOString(),
         end_time: end_time.toISOString(),
         status: "scheduled",
@@ -344,7 +418,7 @@ export async function createBooking(params: {
       if (error.code === "23P01") {
         return {
           error:
-            "Selected time slot overlaps an existing booking or its mandatory 10-minute cooldown buffer (PostgreSQL Error 23P01: prevent_booking_overlap).",
+            "Selected time slot overlaps an existing booking or its mandatory cooldown buffer (PostgreSQL Error 23P01: prevent_booking_overlap).",
           code: "23P01",
         };
       }
@@ -356,6 +430,25 @@ export async function createBooking(params: {
   // Local store with exact PostgreSQL GiST exclusion constraint simulation
   const all = getLocalBookings();
 
+  // Optional active booking limit per user (if configured by Admin)
+  if (
+    user.role !== "admin" &&
+    typeof bookingLimits.maxActiveBookingsPerUser === "number" &&
+    bookingLimits.maxActiveBookingsPerUser > 0
+  ) {
+    const userActiveCount = all.filter(
+      (b) =>
+        isBookingOwnedByUser(b, user) &&
+        (b.status === "scheduled" || b.status === "in_progress")
+    ).length;
+    if (userActiveCount >= bookingLimits.maxActiveBookingsPerUser) {
+      return {
+        error: `You already have ${userActiveCount} active reservation(s) (limit: ${bookingLimits.maxActiveBookingsPerUser}). Complete or cancel an active booking before scheduling another.`,
+        code: "P0001",
+      };
+    }
+  }
+
   const overlapping = findOverlappingBooking(start_time, end_time, all);
   if (overlapping) {
     return {
@@ -365,7 +458,7 @@ export async function createBooking(params: {
       })} – ${end_time.toLocaleTimeString([], {
         hour: "2-digit",
         minute: "2-digit",
-      })} incl. 10m buffer) overlaps with "${
+      })} incl. ${activeBuffer}m buffer) overlaps with "${
         overlapping.file_name
       }" (${overlapping.user_email}). [Code 23P01: exclusion violation]`,
       code: "23P01",
@@ -384,7 +477,7 @@ export async function createBooking(params: {
     user_name: user.full_name,
     file_name: file_name.trim(),
     duration_minutes,
-    buffer_minutes: MANDATORY_BUFFER_MINUTES,
+    buffer_minutes: activeBuffer,
     start_time: start_time.toISOString(),
     end_time: end_time.toISOString(),
     status: "scheduled",
@@ -402,30 +495,34 @@ export async function createBooking(params: {
     start_time.getTime() + duration_minutes * 60 * 1000
   );
 
-  await dispatchEmail({
-    to: user.email,
-    subject: `Reservation Confirmed: "${newBooking.file_name}" on Bambu Lab X1C`,
-    text: `Your Bambu Lab X1C 3D print reservation is confirmed!\n\n• File Name: ${
-      newBooking.file_name
-    }\n• Reserved By: ${user.email}\n• Start Time: ${start_time.toLocaleString()}\n• Active Print Window: ${start_time.toLocaleTimeString(
-      [],
-      { hour: "2-digit", minute: "2-digit" }
-    )} – ${printFinish.toLocaleTimeString([], {
+  const rendered = renderEmailTemplate("confirmation", {
+    fileName: newBooking.file_name,
+    userEmail: user.email,
+    userName: user.full_name,
+    startTime: start_time.toLocaleString(),
+    printFinishTime: printFinish.toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
-    })} (${duration_minutes} mins)\n• Cooldown & Bed Clear Buffer: ${printFinish.toLocaleTimeString(
-      [],
-      { hour: "2-digit", minute: "2-digit" }
-    )} – ${end_time.toLocaleTimeString([], {
+    }),
+    endTime: end_time.toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
-    })} (+10 mins)\n• Pre-Slot Email Reminder: ${
-      normalizedReminder
-        ? `${normalizedReminder} minutes before start`
-        : "Disabled"
-    }\n\nIMPORTANT: Please click "Start Print" on the portal when your slot begins to prevent late-arrival auto-cancellation.`,
-    type: "confirmation",
+    }),
+    duration: duration_minutes,
+    buffer: activeBuffer,
+    minsBefore: normalizedReminder
+      ? `${normalizedReminder} minutes before start`
+      : "Disabled",
   });
+
+  if (rendered.enabled) {
+    await dispatchEmail({
+      to: user.email,
+      subject: rendered.subject,
+      text: rendered.text,
+      type: "confirmation",
+    });
+  }
 
   return { data: newBooking };
 }
@@ -460,35 +557,40 @@ export async function startPrintJob(
   const estPrintFinish = addMinutes(now, target.duration_minutes);
   const scheduledEnd = new Date(target.end_time);
 
-  await dispatchEmail({
-    to: target.user_email,
-    subject: `Print Started: "${target.file_name}" is Now Printing on Bambu X1C`,
-    text: `Your print job "${
-      target.file_name
-    }" has been marked IN PROGRESS!\n\n• Started At: ${now.toLocaleTimeString(
-      [],
-      { hour: "2-digit", minute: "2-digit" }
-    )}\n• Estimated Print Completion: ${estPrintFinish.toLocaleTimeString([], {
+  const rendered = renderEmailTemplate("print_started", {
+    fileName: target.file_name,
+    userEmail: target.user_email,
+    userName: target.user_name || target.user_email,
+    startTime: now.toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
-    })} (${
-      target.duration_minutes
-    }m duration)\n• Total Slot Ends (incl. +10m cooldown buffer): ${scheduledEnd.toLocaleTimeString(
-      [],
-      { hour: "2-digit", minute: "2-digit" }
-    )}\n\nWhen your print finishes and you clear the build plate, click "Mark Complete & Clear Bed" on the portal to release any remaining time for the next student in queue.`,
-    type: "print_started",
+    }),
+    printFinishTime: estPrintFinish.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    }),
+    endTime: scheduledEnd.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    }),
+    duration: target.duration_minutes,
+    buffer: target.buffer_minutes,
   });
+
+  if (rendered.enabled) {
+    await dispatchEmail({
+      to: target.user_email,
+      subject: rendered.subject,
+      text: rendered.text,
+      type: "print_started",
+    });
+  }
 
   return { data: updatedBooking };
 }
 
 /**
  * Section 4.3: Early Completion & Slot Offer Flow
- * 1. Marks booking `completed`, sets `actual_completed_at = now()`,
- *    and updates `end_time = now() + 10 minutes` (frees remaining schedule block).
- * 2. Sends Print Completed confirmation email to the user who finished.
- * 3. Finds immediate next `scheduled` booking and sends Early Slot Offer magic link email.
  */
 export async function completeAndClearBed(
   bookingId: string,
@@ -500,7 +602,10 @@ export async function completeAndClearBed(
   error?: string;
 }> {
   const now = new Date();
-  const newEndWithCooldown = addMinutes(now, MANDATORY_BUFFER_MINUTES);
+  const activeBuffer =
+    getAdminSettings().bookingLimits.cooldownBufferMinutes ??
+    MANDATORY_BUFFER_MINUTES;
+  const newEndWithCooldown = addMinutes(now, activeBuffer);
 
   const all = getLocalBookings();
   const target = all.find((b) => b.id === bookingId);
@@ -538,31 +643,39 @@ export async function completeAndClearBed(
   const updatedList = all.map((b) => (b.id === bookingId ? updatedBooking : b));
   saveLocalBookings(updatedList);
 
-  // 1. Send Print Completed confirmation email to the user who completed their print
-  await dispatchEmail({
-    to: target.user_email,
-    subject: `Print Completed & Bed Cleared: "${target.file_name}"`,
-    text: `Thank you for marking your Bambu Lab X1C print complete and clearing the build plate!\n\n• File Name: ${
-      target.file_name
-    }\n• Completed At: ${now.toLocaleTimeString([], {
+  const renderedComplete = renderEmailTemplate("print_completed", {
+    fileName: target.file_name,
+    userEmail: target.user_email,
+    userName: target.user_name || target.user_email,
+    startTime: now.toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
-    })}\n• 10-Minute Cooldown Buffer Ends: ${effectiveEnd.toLocaleTimeString(
-      [],
-      { hour: "2-digit", minute: "2-digit" }
-    )}\n• Status: COMPLETED`,
-    type: "print_completed",
+    }),
+    endTime: effectiveEnd.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    }),
+    duration: target.duration_minutes,
+    buffer: activeBuffer,
+    status: "COMPLETED",
   });
+
+  if (renderedComplete.enabled) {
+    await dispatchEmail({
+      to: target.user_email,
+      subject: renderedComplete.subject,
+      text: renderedComplete.text,
+      type: "print_completed",
+    });
+  }
 
   let nextBookingNotified: CalendarBooking | null = null;
   let magicLinkUrl: string | undefined;
 
   if (nextBookings.length > 0) {
     const nextJob = nextBookings[0];
-    // Snap the earliest available start time to the next 15-minute increment after the 10-min cooldown
     const earliestNewStart = snapTo15MinSlot(effectiveEnd, true);
 
-    // Only offer if the new start time is genuinely earlier than their current scheduled start_time
     if (earliestNewStart.getTime() < new Date(nextJob.start_time).getTime()) {
       nextBookingNotified = nextJob;
       const baseUrl = getAppBaseUrl();
@@ -571,20 +684,33 @@ export async function completeAndClearBed(
         nextJob.id
       )}&new_start=${encodeURIComponent(earliestNewStart.toISOString())}`;
 
-      await dispatchEmail({
-        to: nextJob.user_email,
-        subject: "Bambu X1C is available early! Shift your print up?",
-        text: `Good news! The previous print ("${target.file_name}") finished early and the build plate has been cleared.\n\nYou can shift your reservation for "${nextJob.file_name}" forward to ${earliestNewStart.toLocaleTimeString([], {
+      const renderedOffer = renderEmailTemplate("early_offer", {
+        fileName: nextJob.file_name,
+        previousFileName: target.file_name,
+        userEmail: nextJob.user_email,
+        userName: nextJob.user_name || nextJob.user_email,
+        newStartTime: earliestNewStart.toLocaleTimeString([], {
           hour: "2-digit",
           minute: "2-digit",
-        })} (instead of ${new Date(nextJob.start_time).toLocaleTimeString([], {
+        }),
+        startTime: new Date(nextJob.start_time).toLocaleTimeString([], {
           hour: "2-digit",
           minute: "2-digit",
-        })}).\n\nClick the link below to log in with your @illinois.edu account and claim the earlier slot:`,
-        actionUrl: magicLinkUrl,
-        actionLabel: "Shift Print Up Now",
-        type: "early_offer",
+        }),
+        duration: nextJob.duration_minutes,
+        buffer: nextJob.buffer_minutes,
       });
+
+      if (renderedOffer.enabled) {
+        await dispatchEmail({
+          to: nextJob.user_email,
+          subject: renderedOffer.subject,
+          text: renderedOffer.text,
+          actionUrl: magicLinkUrl,
+          actionLabel: "Shift Print Up Now",
+          type: "early_offer",
+        });
+      }
     }
   }
 
@@ -611,19 +737,28 @@ export async function triggerBookingReminderEmail(
   const minsBefore = target.reminder_minutes_before || 15;
 
   if (kind === "slot_starting") {
-    await dispatchEmail({
-      to: target.user_email,
-      subject: `Slot Starting Now: Start Your Print "${target.file_name}" on Bambu X1C`,
-      text: `Your reserved Bambu Lab X1C time slot for "${
-        target.file_name
-      }" is starting right now (${startDate.toLocaleTimeString([], {
+    const rendered = renderEmailTemplate("slot_starting", {
+      fileName: target.file_name,
+      userEmail: target.user_email,
+      userName: target.user_name || target.user_email,
+      startTime: startDate.toLocaleTimeString([], {
         hour: "2-digit",
         minute: "2-digit",
-      })})!\n\nPlease load your filament, start the job on the printer, and click "Start Print" on the booking portal so your reservation is not auto-canceled for late arrival.`,
-      actionUrl: getAppBaseUrl(),
-      actionLabel: "Open Portal & Click Start Print",
-      type: "slot_starting",
+      }),
+      duration: target.duration_minutes,
+      buffer: target.buffer_minutes,
     });
+
+    if (rendered.enabled) {
+      await dispatchEmail({
+        to: target.user_email,
+        subject: rendered.subject,
+        text: rendered.text,
+        actionUrl: getAppBaseUrl(),
+        actionLabel: "Open Portal & Click Start Print",
+        type: "slot_starting",
+      });
+    }
 
     saveLocalBookings(
       all.map((b) =>
@@ -633,18 +768,26 @@ export async function triggerBookingReminderEmail(
     return { sent: true };
   }
 
-  await dispatchEmail({
-    to: target.user_email,
-    subject: `Reminder: "${target.file_name}" Print Slot Starts in ${minsBefore} Minutes`,
-    text: `Heads up! Your Bambu Lab X1C reservation is coming up in ${minsBefore} minutes.\n\n• File Name: ${
-      target.file_name
-    }\n• Scheduled Start: ${startDate.toLocaleString()}\n• Duration: ${
-      target.duration_minutes
-    } mins (+10m cooldown buffer)\n\nRemember to head to the lab and click "Start Print" on the portal when your slot begins.`,
-    actionUrl: getAppBaseUrl(),
-    actionLabel: "View My Reservation",
-    type: "pre_booking_reminder",
+  const renderedReminder = renderEmailTemplate("pre_booking_reminder", {
+    fileName: target.file_name,
+    userEmail: target.user_email,
+    userName: target.user_name || target.user_email,
+    startTime: startDate.toLocaleString(),
+    duration: target.duration_minutes,
+    buffer: target.buffer_minutes,
+    minsBefore,
   });
+
+  if (renderedReminder.enabled) {
+    await dispatchEmail({
+      to: target.user_email,
+      subject: renderedReminder.subject,
+      text: renderedReminder.text,
+      actionUrl: getAppBaseUrl(),
+      actionLabel: "View My Reservation",
+      type: "pre_booking_reminder",
+    });
+  }
 
   saveLocalBookings(
     all.map((b) => (b.id === bookingId ? { ...b, reminder_sent: true } : b))
@@ -755,13 +898,19 @@ export async function cancelUserBooking(
   const all = getLocalBookings();
   const target = all.find((b) => b.id === bookingId);
   if (!target) return { error: "Booking not found." };
-  if (target.user_id !== user.id && user.role !== "admin") {
+  if (
+    !isBookingOwnedByUser(target, user) &&
+    user.role !== "admin"
+  ) {
     return { error: "Unauthorized." };
   }
 
   const updatedBooking: CalendarBooking = {
     ...target,
-    status: user.role === "admin" && target.user_id !== user.id ? "canceled_admin" : "canceled_user",
+    status:
+      user.role === "admin" && !isBookingOwnedByUser(target, user)
+        ? "canceled_admin"
+        : "canceled_user",
     updated_at: new Date().toISOString(),
   };
 
@@ -799,11 +948,14 @@ export async function adminOverrideBooking(params: {
   const target = all.find((b) => b.id === bookingId);
   if (!target) return { error: "Booking not found." };
 
+  const activeBuffer =
+    getAdminSettings().bookingLimits.cooldownBufferMinutes ??
+    MANDATORY_BUFFER_MINUTES;
   const snappedStart = snapTo15MinSlot(newStartTime);
   const newEndTime = calculateEndTime(
     snappedStart,
     newDurationMinutes,
-    MANDATORY_BUFFER_MINUTES
+    activeBuffer
   );
 
   // If the new status is active, ensure no overlap with other active bookings
@@ -826,6 +978,7 @@ export async function adminOverrideBooking(params: {
     start_time: snappedStart.toISOString(),
     end_time: newEndTime.toISOString(),
     duration_minutes: newDurationMinutes,
+    buffer_minutes: activeBuffer,
     status: newStatus,
     updated_at: new Date().toISOString(),
   };
@@ -833,16 +986,26 @@ export async function adminOverrideBooking(params: {
   saveLocalBookings(all.map((b) => (b.id === bookingId ? updatedBooking : b)));
 
   if (sendNotification) {
-    await dispatchEmail({
-      to: target.user_email,
-      subject: `Lab Admin Schedule Adjustment: "${target.file_name}"`,
-      text: `A Lab Admin (${adminUser.email}) updated your reservation for "${
-        target.file_name
-      }":\n\n• Status: ${newStatus.toUpperCase()}\n• Start Time: ${snappedStart.toLocaleString()}\n• Duration: ${newDurationMinutes} mins (+10m buffer)\n${
-        reason ? `• Admin Note: ${reason}` : ""
-      }`,
-      type: "admin_override",
+    const rendered = renderEmailTemplate("admin_override", {
+      fileName: target.file_name,
+      userEmail: target.user_email,
+      userName: target.user_name || target.user_email,
+      adminEmail: adminUser.email,
+      status: newStatus.toUpperCase(),
+      startTime: snappedStart.toLocaleString(),
+      duration: newDurationMinutes,
+      buffer: activeBuffer,
+      reason: reason || "Schedule adjustment by Lab Admin.",
     });
+
+    if (rendered.enabled) {
+      await dispatchEmail({
+        to: target.user_email,
+        subject: rendered.subject,
+        text: rendered.text,
+        type: "admin_override",
+      });
+    }
   }
 
   return { data: updatedBooking };
@@ -900,12 +1063,21 @@ export async function runAutoCancelLateCheck(simulatedNow?: Date): Promise<{
         updatedList[idx] = updatedItem;
         canceledBookings.push(updatedItem);
 
-        await dispatchEmail({
-          to: booking.user_email,
-          subject: "Bambu X1C Reservation Canceled (Late Arrival)",
-          text: `Your reservation for "${booking.file_name}" was automatically canceled (status: canceled_late).\n\nReason: ${evaluation.reason}`,
-          type: "late_cancel",
+        const renderedCancel = renderEmailTemplate("late_cancel", {
+          fileName: booking.file_name,
+          userEmail: booking.user_email,
+          userName: booking.user_name || booking.user_email,
+          reason: evaluation.reason || "Late arrival auto-cancellation.",
         });
+
+        if (renderedCancel.enabled) {
+          await dispatchEmail({
+            to: booking.user_email,
+            subject: renderedCancel.subject,
+            text: renderedCancel.text,
+            type: "late_cancel",
+          });
+        }
       }
     } else if (evaluation.action === "warn_15m") {
       const idx = updatedList.findIndex((item) => item.id === booking.id);
@@ -918,12 +1090,21 @@ export async function runAutoCancelLateCheck(simulatedNow?: Date): Promise<{
         updatedList[idx] = updatedItem;
         warnedBookings.push(updatedItem);
 
-        await dispatchEmail({
-          to: booking.user_email,
-          subject: "Reminder: Please Start Your Bambu X1C Print",
-          text: `Your scheduled print "${booking.file_name}" started 15 minutes ago, and you have not clicked "Start Print" yet. Since no one is currently booked immediately after you, your reservation remains open until your scheduled end time, or until a subsequent slot requires the printer.`,
-          type: "late_warning",
+        const renderedWarn = renderEmailTemplate("late_warning", {
+          fileName: booking.file_name,
+          userEmail: booking.user_email,
+          userName: booking.user_name || booking.user_email,
+          reason: evaluation.reason,
         });
+
+        if (renderedWarn.enabled) {
+          await dispatchEmail({
+            to: booking.user_email,
+            subject: renderedWarn.subject,
+            text: renderedWarn.text,
+            type: "late_warning",
+          });
+        }
       }
     }
   }
