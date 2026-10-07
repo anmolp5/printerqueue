@@ -33,22 +33,6 @@ export const DEV_PERSONAS: UserProfile[] = [
     microsoft_oid: "oid-student-1-uiuc",
     email: "anmolp5@illinois.edu",
     full_name: "Anmol Prabhakar",
-    role: "user",
-    created_at: new Date().toISOString(),
-  },
-  {
-    id: "user-student-2",
-    microsoft_oid: "oid-student-2-uiuc",
-    email: "mchen42@illinois.edu",
-    full_name: "Maya Chen (Student)",
-    role: "user",
-    created_at: new Date().toISOString(),
-  },
-  {
-    id: "user-admin-1",
-    microsoft_oid: "manual-init-admin-oid",
-    email: "admin@illinois.edu",
-    full_name: "Lab Admin (Staff)",
     role: "admin",
     created_at: new Date().toISOString(),
   },
@@ -65,125 +49,18 @@ export function isBookingOwnedByUser(
   );
 }
 
-function createSeedBookings(): CalendarBooking[] {
-  const now = new Date();
-  const monday = startOfWeek(now, { weekStartsOn: 1 });
+const DEMO_TEST_EMAILS = new Set([
+  "mchen42@illinois.edu",
+  "admin@illinois.edu",
+  "test.admin@illinois.edu",
+  "staff1@illinois.edu",
+  "external.user@gmail.com",
+]);
 
-  // Create an active print right now (started 30m ago, 90m duration + 10m buffer)
-  const activeStart = snapTo15MinSlot(addMinutes(now, -30));
-  const activeEnd = calculateEndTime(activeStart, 90, 10);
-
-  // Create a scheduled print right after the active print (for testing early completion shift!)
-  const nextScheduledStart = snapTo15MinSlot(addMinutes(activeEnd, 15), true);
-  const nextScheduledEnd = calculateEndTime(nextScheduledStart, 60, 10);
-
-  // Additional weekly bookings for visual richness on the calendar
-  const tueMorning = setMinutes(setHours(addDays(monday, 1), 9), 0);
-  const wedAfternoon = setMinutes(setHours(addDays(monday, 2), 14), 15);
-  const thuMorning = setMinutes(setHours(addDays(monday, 3), 10), 30);
-  const friAfternoon = setMinutes(setHours(addDays(monday, 4), 13), 0);
-
-  const seed: CalendarBooking[] = [
-    {
-      id: "booking-seed-active",
-      user_id: "user-student-1",
-      user_email: "anmolp5@illinois.edu",
-      user_name: "Anmol Prabhakar",
-      file_name: "drone_arm_cf_nylon.3mf",
-      duration_minutes: 90,
-      buffer_minutes: 10,
-      start_time: activeStart.toISOString(),
-      end_time: activeEnd.toISOString(),
-      status: "in_progress",
-      actual_started_at: addMinutes(activeStart, 2).toISOString(),
-      created_at: addMinutes(activeStart, -120).toISOString(),
-      updated_at: addMinutes(activeStart, 2).toISOString(),
-    },
-    {
-      id: "booking-seed-next",
-      user_id: "user-student-2",
-      user_email: "mchen42@illinois.edu",
-      user_name: "Maya Chen",
-      file_name: "planetary_gearbox_v4.gcode",
-      duration_minutes: 60,
-      buffer_minutes: 10,
-      start_time: nextScheduledStart.toISOString(),
-      end_time: nextScheduledEnd.toISOString(),
-      status: "scheduled",
-      created_at: addMinutes(activeStart, -60).toISOString(),
-      updated_at: addMinutes(activeStart, -60).toISOString(),
-    },
-  ];
-
-  // Add extra bookings on other days if they don't overlap with today's two slots
-  const candidates: Array<{
-    id: string;
-    user_id: string;
-    user_email: string;
-    user_name: string;
-    file_name: string;
-    duration: number;
-    start: Date;
-  }> = [
-    {
-      id: "booking-seed-tue",
-      user_id: "user-student-2",
-      user_email: "mchen42@illinois.edu",
-      user_name: "Maya Chen",
-      file_name: "sensor_housing_petg.3mf",
-      duration: 75,
-      start: tueMorning,
-    },
-    {
-      id: "booking-seed-wed",
-      user_id: "user-admin-1",
-      user_email: "admin@illinois.edu",
-      user_name: "Lab Admin",
-      file_name: "x1c_calibration_plate.3mf",
-      duration: 45,
-      start: wedAfternoon,
-    },
-    {
-      id: "booking-seed-thu",
-      user_id: "user-student-2",
-      user_email: "mchen42@illinois.edu",
-      user_name: "Maya Chen",
-      file_name: "robotics_gripper_left.3mf",
-      duration: 120,
-      start: thuMorning,
-    },
-    {
-      id: "booking-seed-fri",
-      user_id: "user-admin-1",
-      user_email: "admin@illinois.edu",
-      user_name: "Lab Admin",
-      file_name: "fixture_jig_pla_matte.gcode",
-      duration: 90,
-      start: friAfternoon,
-    },
-  ];
-
-  for (const c of candidates) {
-    const cEnd = calculateEndTime(c.start, c.duration, 10);
-    if (!findOverlappingBooking(c.start, cEnd, seed)) {
-      seed.push({
-        id: c.id,
-        user_id: c.user_id,
-        user_email: c.user_email,
-        user_name: c.user_name,
-        file_name: c.file_name,
-        duration_minutes: c.duration,
-        buffer_minutes: 10,
-        start_time: c.start.toISOString(),
-        end_time: cEnd.toISOString(),
-        status: "scheduled",
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      });
-    }
-  }
-
-  return seed;
+function isDemoBooking(b: CalendarBooking): boolean {
+  if (b.id.startsWith("booking-seed-")) return true;
+  if (DEMO_TEST_EMAILS.has(b.user_email.trim().toLowerCase())) return true;
+  return false;
 }
 
 type BookingsListener = (bookings: CalendarBooking[]) => void;
@@ -194,27 +71,33 @@ export function getLocalBookings(): CalendarBooking[] {
   try {
     const raw = window.localStorage.getItem(BOOKINGS_STORAGE_KEY);
     if (!raw) {
-      const seeded = createSeedBookings();
-      window.localStorage.setItem(BOOKINGS_STORAGE_KEY, JSON.stringify(seeded));
-      return seeded;
+      return [];
     }
     const parsed = JSON.parse(raw) as CalendarBooking[];
-    // Auto-migrate any old aprabha2@illinois.edu records to anmolp5@illinois.edu
-    let migrated = false;
-    const normalized = parsed.map((b) => {
-      if (b.user_email === "aprabha2@illinois.edu") {
-        migrated = true;
-        return { ...b, user_email: "anmolp5@illinois.edu" };
-      }
-      return b;
-    });
-    if (migrated) {
+    let changed = false;
+    const cleaned = parsed
+      .filter((b) => {
+        if (isDemoBooking(b)) {
+          changed = true;
+          return false;
+        }
+        return true;
+      })
+      .map((b) => {
+        if (b.user_email === "aprabha2@illinois.edu") {
+          changed = true;
+          return { ...b, user_email: "anmolp5@illinois.edu" };
+        }
+        return b;
+      });
+
+    if (changed) {
       window.localStorage.setItem(
         BOOKINGS_STORAGE_KEY,
-        JSON.stringify(normalized)
+        JSON.stringify(cleaned)
       );
     }
-    return normalized;
+    return cleaned;
   } catch {
     return [];
   }
@@ -227,9 +110,8 @@ function saveLocalBookings(bookings: CalendarBooking[]) {
 }
 
 export function resetDemoData(): CalendarBooking[] {
-  const seeded = createSeedBookings();
-  saveLocalBookings(seeded);
-  return seeded;
+  saveLocalBookings([]);
+  return [];
 }
 
 export function subscribeToBookings(listener: BookingsListener): () => void {

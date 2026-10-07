@@ -104,7 +104,6 @@ export default function AdminDashboardPage() {
     isAdmin,
     canToggleAdminRole,
     toggleCurrentUserRole,
-    switchDevPersona,
   } = useUserSession();
 
   const [activeTab, setActiveTab] = useState<AdminTabId>("permissions");
@@ -580,65 +579,69 @@ export default function AdminDashboardPage() {
     <div className="min-h-screen flex flex-col bg-slate-50">
       {/* Top Admin Header */}
       <header className="bg-[#13294B] text-white border-b border-slate-800 shadow-md sticky top-0 z-30">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3.5 flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3.5">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 py-2.5 sm:py-3.5 flex flex-wrap items-center justify-between gap-2.5 sm:gap-4">
+          <div className="flex items-center gap-2.5 sm:gap-3.5 min-w-0 flex-1">
             <Link
               href="/"
-              className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-semibold flex items-center gap-1.5 border border-white/15 transition-colors"
+              className="px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-semibold flex items-center gap-1.5 border border-white/15 transition-colors shrink-0"
             >
               <ArrowLeft className="w-4 h-4" />
-              <span>Back to Calendar</span>
+              <span className="hidden sm:inline">Back to Calendar</span>
             </Link>
             <div className="h-6 w-px bg-white/15 hidden sm:block" />
-            <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-xl bg-[#FF5F05] flex items-center justify-center shadow-inner">
-                <Shield className="w-5 h-5 text-white" />
+            <div className="flex items-center gap-2.5 min-w-0 flex-1">
+              <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-[#FF5F05] flex items-center justify-center shadow-inner shrink-0">
+                <Shield className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
               </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h1 className="text-base sm:text-lg font-bold tracking-tight">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h1 className="text-sm sm:text-lg font-bold tracking-tight truncate">
                     Admin Control Center
                   </h1>
                   {userIsSuperAdmin ? (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-amber-400/20 text-amber-300 border border-amber-400/40">
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-amber-400/20 text-amber-300 border border-amber-400/40 shrink-0">
                       <Crown className="w-3 h-3" />
                       Super Admin
                     </span>
                   ) : (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-indigo-400/20 text-indigo-200 border border-indigo-400/40">
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-indigo-400/20 text-indigo-200 border border-indigo-400/40 shrink-0">
                       <ShieldCheck className="w-3 h-3" />
                       Lab Admin
                     </span>
                   )}
                 </div>
-                <p className="text-[11px] text-slate-300">
-                  Signed in as <strong>{user.email}</strong> •{" "}
-                  {userIsSuperAdmin
-                    ? "Full Owner Privileges (Can Manage Admins)"
-                    : `Standard Admin (Only ${SUPER_ADMIN_EMAIL} can add/remove admins)`}
+                <p className="text-[11px] text-slate-300 truncate">
+                  Signed in as <strong>{user.email}</strong>
+                  <span className="hidden md:inline">
+                    {" "}
+                    •{" "}
+                    {userIsSuperAdmin
+                      ? "Full Owner Privileges (Can Manage Admins)"
+                      : `Standard Admin (Only ${SUPER_ADMIN_EMAIL} can add/remove admins)`}
+                  </span>
                 </p>
               </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2 shrink-0">
             <button
               onClick={() => commitSettings(settings)}
-              className="px-3.5 py-2 rounded-lg bg-[#FF5F05] hover:bg-orange-600 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+              className="px-3 sm:px-3.5 py-1.5 sm:py-2 rounded-lg bg-[#FF5F05] hover:bg-orange-600 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
             >
               <Save className="w-3.5 h-3.5" />
-              <span>Save All Changes</span>
+              <span>Save All</span>
             </button>
           </div>
         </div>
       </header>
 
       {/* Main Content */}
-      <main className="max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 space-y-6 flex-1">
+      <main className="max-w-7xl w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 space-y-4 sm:space-y-6 flex-1">
         {/* Live Toast Notification */}
         {statusToast && (
           <div
-            className={`rounded-xl p-3.5 border shadow-md flex items-center justify-between gap-3 text-xs font-medium ${
+            className={`rounded-xl p-3 sm:p-3.5 border shadow-md flex items-center justify-between gap-3 text-xs font-medium ${
               statusToast.type === "success"
                 ? "bg-emerald-950 text-emerald-100 border-emerald-700"
                 : "bg-red-950 text-red-100 border-red-700"
@@ -654,81 +657,81 @@ export default function AdminDashboardPage() {
             </div>
             <button
               onClick={() => setStatusToast(null)}
-              className="text-[11px] underline opacity-80 hover:opacity-100 cursor-pointer"
+              className="text-[11px] underline opacity-80 hover:opacity-100 cursor-pointer shrink-0"
             >
               Dismiss
             </button>
           </div>
         )}
 
-        {/* Top Summary KPI Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-          <div className="bg-white rounded-xl border border-zinc-200 p-4 shadow-2xs">
-            <div className="flex items-center justify-between text-xs text-zinc-500">
-              <span>Queue Reservations</span>
-              <ListFilter className="w-4 h-4 text-blue-600" />
+        {/* Top Summary KPI Cards (2x2 on Mobile, 4x1 on Desktop) */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-3.5">
+          <div className="bg-white rounded-xl border border-zinc-200 p-3 sm:p-4 shadow-2xs">
+            <div className="flex items-center justify-between text-[11px] sm:text-xs text-zinc-500">
+              <span className="truncate">Queue Slots</span>
+              <ListFilter className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-blue-600 shrink-0" />
             </div>
-            <div className="text-2xl font-bold text-zinc-900 mt-1">
+            <div className="text-lg sm:text-2xl font-bold text-zinc-900 mt-1">
               {
                 bookings.filter(
                   (b) => b.status === "scheduled" || b.status === "in_progress"
                 ).length
               }{" "}
-              <span className="text-xs font-normal text-zinc-500">
+              <span className="text-[11px] sm:text-xs font-normal text-zinc-500">
                 active ({bookings.length} total)
               </span>
             </div>
           </div>
 
-          <div className="bg-white rounded-xl border border-zinc-200 p-4 shadow-2xs">
-            <div className="flex items-center justify-between text-xs text-zinc-500">
-              <span>Authorized Lab Admins</span>
-              <Crown className="w-4 h-4 text-amber-500" />
+          <div className="bg-white rounded-xl border border-zinc-200 p-3 sm:p-4 shadow-2xs">
+            <div className="flex items-center justify-between text-[11px] sm:text-xs text-zinc-500">
+              <span className="truncate">Lab Admins</span>
+              <Crown className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-500 shrink-0" />
             </div>
-            <div className="text-2xl font-bold text-zinc-900 mt-1">
+            <div className="text-lg sm:text-2xl font-bold text-zinc-900 mt-1 truncate">
               {settings.permissions.adminEmails.length}{" "}
-              <span className="text-xs font-normal text-zinc-500">
-                Owner: {SUPER_ADMIN_EMAIL}
+              <span className="text-[11px] sm:text-xs font-normal text-zinc-500">
+                authorized
               </span>
             </div>
           </div>
 
-          <div className="bg-white rounded-xl border border-zinc-200 p-4 shadow-2xs">
-            <div className="flex items-center justify-between text-xs text-zinc-500">
-              <span>Booking Limits Policy</span>
-              <Clock className="w-4 h-4 text-indigo-600" />
+          <div className="bg-white rounded-xl border border-zinc-200 p-3 sm:p-4 shadow-2xs">
+            <div className="flex items-center justify-between text-[11px] sm:text-xs text-zinc-500">
+              <span className="truncate">Booking Cap</span>
+              <Clock className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-indigo-600 shrink-0" />
             </div>
-            <div className="text-2xl font-bold text-zinc-900 mt-1">
+            <div className="text-lg sm:text-2xl font-bold text-zinc-900 mt-1">
               {settings.bookingLimits.maxDurationMinutes}m{" "}
-              <span className="text-xs font-normal text-zinc-500">
-                max • +{settings.bookingLimits.cooldownBufferMinutes}m buffer
+              <span className="text-[11px] sm:text-xs font-normal text-zinc-500">
+                +{settings.bookingLimits.cooldownBufferMinutes}m buf
               </span>
             </div>
           </div>
 
-          <div className="bg-white rounded-xl border border-zinc-200 p-4 shadow-2xs">
-            <div className="flex items-center justify-between text-xs text-zinc-500">
-              <span>Printer Portal Status</span>
-              <Wrench className="w-4 h-4 text-emerald-600" />
+          <div className="bg-white rounded-xl border border-zinc-200 p-3 sm:p-4 shadow-2xs">
+            <div className="flex items-center justify-between text-[11px] sm:text-xs text-zinc-500">
+              <span className="truncate">Portal Status</span>
+              <Wrench className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-600 shrink-0" />
             </div>
             <div className="mt-1.5 flex items-center gap-2">
               {settings.permissions.maintenanceMode ? (
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-900 border border-amber-300">
-                  <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
-                  Maintenance Mode (Paused)
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-full text-[11px] sm:text-xs font-bold bg-amber-100 text-amber-900 border border-amber-300 truncate">
+                  <AlertTriangle className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-amber-600 shrink-0" />
+                  <span className="truncate">Maintenance</span>
                 </span>
               ) : (
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-900 border border-emerald-300">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                  Operational &amp; Accepting Slots
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-full text-[11px] sm:text-xs font-bold bg-emerald-100 text-emerald-900 border border-emerald-300 truncate">
+                  <CheckCircle2 className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-emerald-600 shrink-0" />
+                  <span className="truncate">Operational</span>
                 </span>
               )}
             </div>
           </div>
         </div>
 
-        {/* Navigation Tabs */}
-        <div className="bg-white rounded-xl border border-zinc-200 p-1.5 shadow-2xs flex flex-wrap gap-1.5">
+        {/* Navigation Tabs (Horizontally Scrollable Single Row on Mobile) */}
+        <div className="bg-white rounded-xl border border-zinc-200 p-1.5 shadow-2xs flex overflow-x-auto no-scrollbar gap-1.5">
           {[
             {
               id: "permissions" as AdminTabId,
@@ -737,7 +740,7 @@ export default function AdminDashboardPage() {
             },
             {
               id: "limits" as AdminTabId,
-              label: "Booking Limits & Rules",
+              label: "Booking Limits",
               icon: Sliders,
             },
             {
@@ -752,7 +755,7 @@ export default function AdminDashboardPage() {
             },
             {
               id: "profile" as AdminTabId,
-              label: "Printer & Lab Profile",
+              label: "Lab Profile",
               icon: Printer,
             },
             {
@@ -767,13 +770,13 @@ export default function AdminDashboardPage() {
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`px-3.5 py-2 rounded-lg text-xs font-bold flex items-center gap-2 transition-colors cursor-pointer ${
+                className={`px-3 sm:px-3.5 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 sm:gap-2 whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
                   isActive
                     ? "bg-[#13294B] text-white shadow-xs"
                     : "text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900"
                 }`}
               >
-                <Icon className="w-3.5 h-3.5" />
+                <Icon className="w-3.5 h-3.5 shrink-0" />
                 <span>{tab.label}</span>
               </button>
             );
@@ -879,25 +882,10 @@ export default function AdminDashboardPage() {
                         )}
                       </div>
                       <div className="flex items-center gap-2.5">
-                        {isCurrentSession ? (
+                        {isCurrentSession && (
                           <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-bold">
                             Active Session
                           </span>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              switchDevPersona(adminEmail);
-                              showToast(
-                                "success",
-                                `Switched active preview session to ${adminEmail} (Admin).`
-                              );
-                            }}
-                            className="px-2 py-0.5 rounded bg-zinc-100 hover:bg-indigo-50 text-zinc-700 hover:text-indigo-700 border border-zinc-200 text-[10px] font-semibold cursor-pointer"
-                            title="Preview the portal as this administrator"
-                          >
-                            Test as User
-                          </button>
                         )}
                         {isOwner ? (
                           <span className="text-[11px] text-zinc-400 flex items-center gap-1">
@@ -1735,7 +1723,136 @@ export default function AdminDashboardPage() {
               </button>
             </div>
 
-            <div className="overflow-x-auto">
+            {/* Mobile Card View (< 768px) */}
+            <div className="md:hidden divide-y divide-zinc-100">
+              {filteredBookings.length === 0 ? (
+                <div className="py-8 text-center text-xs text-zinc-400 italic">
+                  No reservations match your filter criteria.
+                </div>
+              ) : (
+                filteredBookings.map((b) => (
+                  <div key={b.id} className="p-3.5 space-y-2.5 text-xs">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="font-bold text-zinc-900 truncate">
+                          {b.file_name}
+                        </div>
+                        <div className="text-[11px] text-zinc-500 truncate mt-0.5">
+                          {b.user_email}
+                        </div>
+                      </div>
+                      <span
+                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase shrink-0 ${
+                          b.status === "in_progress"
+                            ? "bg-amber-100 text-amber-800"
+                            : b.status === "scheduled"
+                            ? "bg-blue-100 text-blue-800"
+                            : b.status === "completed"
+                            ? "bg-emerald-100 text-emerald-800"
+                            : "bg-red-100 text-red-800"
+                        }`}
+                      >
+                        {b.status}
+                      </span>
+                    </div>
+
+                    <div className="text-[11px] text-zinc-700 bg-zinc-50 rounded-lg px-2.5 py-1.5 border border-zinc-200/70 flex items-center justify-between">
+                      <span>
+                        {format(new Date(b.start_time), "EEE MMM d, HH:mm")} –{" "}
+                        {format(new Date(b.end_time), "HH:mm")}
+                      </span>
+                      <span className="font-semibold text-zinc-600">
+                        {b.duration_minutes}m + {b.buffer_minutes}m
+                      </span>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                      {b.status === "scheduled" && (
+                        <>
+                          <button
+                            onClick={async () => {
+                              await startPrintJob(b.id, user);
+                              showToast(
+                                "success",
+                                `Started print "${b.file_name}".`
+                              );
+                            }}
+                            className="px-2.5 py-1.5 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold flex items-center gap-1 cursor-pointer"
+                          >
+                            <Play className="w-3 h-3" />
+                            <span>Start</span>
+                          </button>
+                          <button
+                            onClick={async () => {
+                              await triggerBookingReminderEmail(
+                                b.id,
+                                "pre_booking_reminder"
+                              );
+                              showToast(
+                                "success",
+                                `Sent reminder email to ${b.user_email}.`
+                              );
+                            }}
+                            className="px-2.5 py-1.5 rounded-lg bg-blue-50 text-blue-700 border border-blue-200 font-semibold flex items-center gap-1 cursor-pointer"
+                          >
+                            <Bell className="w-3 h-3" />
+                            <span>Remind</span>
+                          </button>
+                        </>
+                      )}
+                      {b.status === "in_progress" && (
+                        <button
+                          onClick={async () => {
+                            await completeAndClearBed(b.id, user);
+                            showToast(
+                              "success",
+                              `Marked "${b.file_name}" complete & cleared bed.`
+                            );
+                          }}
+                          className="px-2.5 py-1.5 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold flex items-center gap-1 cursor-pointer"
+                        >
+                          <CheckCircle2 className="w-3 h-3" />
+                          <span>Complete</span>
+                        </button>
+                      )}
+                      <button
+                        onClick={() => setAdminSelectedBooking(b)}
+                        className="px-3 py-1.5 rounded-lg bg-indigo-50 text-indigo-700 border border-indigo-200 font-semibold cursor-pointer ml-auto"
+                      >
+                        Edit / Shift
+                      </button>
+                      {(b.status === "scheduled" ||
+                        b.status === "in_progress") && (
+                        <button
+                          onClick={async () => {
+                            await adminOverrideBooking({
+                              bookingId: b.id,
+                              adminUser: user,
+                              newStartTime: new Date(b.start_time),
+                              newDurationMinutes: b.duration_minutes,
+                              newStatus: "canceled_admin",
+                              sendNotification: true,
+                              reason: "Canceled by Lab Admin via Queue Manager.",
+                            });
+                            showToast(
+                              "success",
+                              `Canceled "${b.file_name}" and notified ${b.user_email}.`
+                            );
+                          }}
+                          className="px-2.5 py-1.5 rounded-lg bg-red-50 text-red-700 border border-red-200 font-semibold flex items-center gap-1 cursor-pointer"
+                        >
+                          <XCircle className="w-3 h-3" />
+                          <span>Cancel</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Desktop Table (>= 768px) */}
+            <div className="hidden md:block overflow-x-auto">
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr className="border-b border-zinc-200 text-zinc-500 bg-zinc-50/70">
@@ -2165,7 +2282,7 @@ export default function AdminDashboardPage() {
                   Reset &amp; Recovery Actions
                 </h2>
                 <p className="text-xs text-zinc-600">
-                  Reset demo queue bookings or restore all admin settings
+                  Clear all queue reservations or restore all admin settings
                   (limits, email templates, lab profile) back to factory
                   defaults.
                 </p>
@@ -2173,11 +2290,11 @@ export default function AdminDashboardPage() {
                   <button
                     onClick={() => {
                       resetDemoData();
-                      showToast("success", "Reset demo queue bookings.");
+                      showToast("success", "Cleared all queue reservations.");
                     }}
                     className="px-3.5 py-2 rounded-lg border border-zinc-300 hover:bg-zinc-100 text-zinc-800 text-xs font-bold cursor-pointer"
                   >
-                    Reset Demo Queue Bookings
+                    Clear All Queue Bookings
                   </button>
                   <button
                     onClick={() => {

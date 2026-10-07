@@ -6,8 +6,28 @@
   color-scheme: light;
 }
 
+html,
 body {
   background-color: #f8fafc;
   color: #0f172a;
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  overflow-x: hidden;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Prevent iOS Safari from auto-zooming the viewport when focusing inputs on mobile */
+@media (max-width: 640px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }

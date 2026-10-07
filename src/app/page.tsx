@@ -28,7 +28,6 @@ import { WeeklyCalendar } from "@/components/WeeklyCalendar";
 import { BookingModal } from "@/components/BookingModal";
 import { ActiveBookingControls } from "@/components/ActiveBookingControls";
 import { AdminBookingModal } from "@/components/AdminBookingModal";
-import { DevAuthBanner } from "@/components/DevAuthBanner";
 import { LoginScreen } from "@/components/LoginScreen";
 import { useUserSession } from "@/hooks/useUserSession";
 import {
@@ -42,7 +41,6 @@ import {
   runAutoCancelLateCheck,
   triggerBookingReminderEmail,
   checkAndDispatchScheduledReminders,
-  resetDemoData,
 } from "@/lib/store";
 import {
   getAdminSettings,
@@ -58,12 +56,9 @@ export default function HomePage() {
     canToggleAdminRole,
     domainError,
     clearDomainError,
-    switchDevPersona,
     toggleCurrentUserRole,
     signInWithCustomProfile,
-    testExternalDomainRejection,
     signInWithMicrosoft,
-    connectOutlookMailSend,
     signOut,
   } = useUserSession();
 
@@ -210,110 +205,132 @@ export default function HomePage() {
     <div className="min-h-screen flex flex-col bg-slate-50">
       {/* Top Navigation Header */}
       <header className="bg-[#13294B] text-white border-b border-slate-800 shadow-md sticky top-0 z-30">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3.5 flex flex-wrap items-center justify-between gap-4">
-          {/* Brand & Live Printer Status */}
-          <div className="flex items-center gap-3.5">
-            <div className="w-10 h-10 rounded-xl bg-[#FF5F05] flex items-center justify-center shadow-inner">
-              <Printer className="w-5 h-5 text-white" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2.5">
-                <h1 className="text-base sm:text-lg font-bold tracking-tight">
-                  {adminSettings.labProfile.printerName ||
-                    "Bambu Lab X1C Queue & Booking Portal"}
-                </h1>
-                <span className="hidden md:inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider bg-white/10 text-orange-300 border border-white/15">
-                  UIUC @illinois.edu
-                </span>
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 py-2.5 sm:py-3.5 flex flex-col gap-2">
+          <div className="flex items-center justify-between gap-2">
+            {/* Brand & Live Printer Status */}
+            <div className="flex items-center gap-2.5 sm:gap-3.5 min-w-0 flex-1">
+              <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-[#FF5F05] flex items-center justify-center shadow-inner shrink-0">
+                <Printer className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
               </div>
-              <div className="flex items-center gap-3 text-xs text-slate-300 mt-0.5">
-                {adminSettings.permissions.maintenanceMode ? (
-                  <span className="inline-flex items-center gap-1.5 text-amber-300 font-medium">
-                    <Wrench className="w-3.5 h-3.5 text-amber-400" />
-                    Maintenance Mode Active — New student bookings paused
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <h1 className="text-sm sm:text-lg font-bold tracking-tight truncate">
+                    {adminSettings.labProfile.printerName ||
+                      "Bambu Lab X1C Queue & Booking Portal"}
+                  </h1>
+                  <span className="hidden md:inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider bg-white/10 text-orange-300 border border-white/15 shrink-0">
+                    UIUC @illinois.edu
                   </span>
-                ) : activeJobNow ? (
-                  <span className="inline-flex items-center gap-1.5 text-amber-300 font-medium">
-                    <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
-                    Printing: <strong>{activeJobNow.file_name}</strong> (until{" "}
-                    {format(new Date(activeJobNow.end_time), "HH:mm")})
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5 sm:gap-3 text-[11px] sm:text-xs text-slate-300 mt-0.5">
+                  {adminSettings.permissions.maintenanceMode ? (
+                    <span className="inline-flex items-center gap-1 text-amber-300 font-medium truncate">
+                      <Wrench className="w-3 h-3 text-amber-400 shrink-0" />
+                      <span>Maintenance Mode Active</span>
+                    </span>
+                  ) : activeJobNow ? (
+                    <span className="inline-flex items-center gap-1.5 text-amber-300 font-medium truncate">
+                      <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping shrink-0" />
+                      <span className="truncate">
+                        Printing: <strong>{activeJobNow.file_name}</strong> (until{" "}
+                        {format(new Date(activeJobNow.end_time), "HH:mm")})
+                      </span>
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 text-emerald-300 font-medium">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
+                      <span>Printer Idle</span>
+                    </span>
+                  )}
+                  <span className="text-slate-500">•</span>
+                  <span className="shrink-0">{scheduledCount} queued</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Desktop Action Buttons + User Controls */}
+            <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+              {isAdmin && (
+                <Link
+                  href="/admin"
+                  className="hidden sm:flex px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs items-center gap-1.5 shadow-sm border border-indigo-400/50 transition-colors"
+                >
+                  <Sliders className="w-3.5 h-3.5" />
+                  <span>Admin Dashboard</span>
+                </Link>
+              )}
+
+              <button
+                onClick={() => {
+                  setSelectedSlotTime(snapTo15MinSlot(new Date(), true));
+                  setIsBookingModalOpen(true);
+                }}
+                className="hidden sm:flex px-3.5 py-2 rounded-lg bg-[#FF5F05] hover:bg-orange-600 text-white font-bold text-xs items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Book Print Slot</span>
+              </button>
+
+              <div className="flex items-center gap-1.5 sm:gap-2.5 bg-slate-800/90 border border-slate-700 rounded-lg px-2 sm:px-3 py-1 sm:py-1.5 text-xs">
+                <div className="hidden md:flex flex-col text-right">
+                  <span className="font-semibold text-white leading-tight flex items-center justify-end gap-1">
+                    {isAdmin && <Shield className="w-3 h-3 text-indigo-400" />}
+                    {user.full_name}
                   </span>
-                ) : (
-                  <span className="inline-flex items-center gap-1.5 text-emerald-300 font-medium">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                    Printer Idle — Available for Immediate Booking
+                  <span className="text-[10px] text-slate-300">
+                    {user.email}
                   </span>
+                </div>
+                {canToggleAdminRole && (
+                  <button
+                    onClick={toggleCurrentUserRole}
+                    title="Admin View Switcher: Toggle between Admin Mode and Public Student View"
+                    className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider border transition-colors cursor-pointer ${
+                      isAdmin
+                        ? "bg-indigo-600 text-white border-indigo-400 hover:bg-indigo-500"
+                        : "bg-slate-700 text-slate-200 border-slate-600 hover:bg-slate-600"
+                    }`}
+                  >
+                    {user.role}
+                  </button>
                 )}
-                <span className="text-slate-500">•</span>
-                <span>{scheduledCount} queued this week</span>
+                <button
+                  onClick={signOut}
+                  title="Sign out"
+                  className="px-2 sm:px-2.5 py-1 sm:py-1.5 text-[11px] sm:text-xs font-semibold text-slate-200 hover:text-white rounded-md bg-slate-700/80 hover:bg-red-600 transition-colors flex items-center gap-1 cursor-pointer"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Sign Out</span>
+                </button>
               </div>
             </div>
           </div>
 
-          {/* Right User Profile, Admin Dashboard Link & Book Button */}
-          <div className="flex items-center gap-2.5">
+          {/* Compact Mobile Sub-Row (User Identity + Admin Dashboard Shortcut) */}
+          <div className="flex sm:hidden items-center justify-between gap-2 pt-1.5 border-t border-white/10 text-[11px] text-slate-300">
+            <span className="truncate flex items-center gap-1">
+              {isAdmin && <Shield className="w-3 h-3 text-indigo-400 shrink-0" />}
+              <strong className="text-white">{user.full_name}</strong>
+              <span className="text-slate-400 truncate">({user.email})</span>
+            </span>
             {isAdmin && (
               <Link
                 href="/admin"
-                className="px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm border border-indigo-400/50 transition-colors"
+                className="px-2.5 py-1 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-[11px] flex items-center gap-1 shrink-0 shadow-xs"
               >
-                <Sliders className="w-3.5 h-3.5" />
-                <span>Admin Dashboard</span>
+                <Sliders className="w-3 h-3" />
+                <span>Admin Panel</span>
               </Link>
             )}
-
-            <button
-              onClick={() => {
-                setSelectedSlotTime(snapTo15MinSlot(new Date(), true));
-                setIsBookingModalOpen(true);
-              }}
-              className="px-3.5 py-2 rounded-lg bg-[#FF5F05] hover:bg-orange-600 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Book Print Slot</span>
-            </button>
-
-            <div className="flex items-center gap-2.5 bg-slate-800/90 border border-slate-700 rounded-lg px-3 py-1.5 text-xs">
-              <div className="flex flex-col text-right">
-                <span className="font-semibold text-white leading-tight flex items-center justify-end gap-1">
-                  {isAdmin && <Shield className="w-3 h-3 text-indigo-400" />}
-                  {user.full_name}
-                </span>
-                <span className="text-[10px] text-slate-300">
-                  {user.email}
-                </span>
-              </div>
-              {canToggleAdminRole && (
-                <button
-                  onClick={toggleCurrentUserRole}
-                  title="Admin View Switcher: Toggle between Admin Mode and Public Student View"
-                  className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider border transition-colors cursor-pointer ${
-                    isAdmin
-                      ? "bg-indigo-600 text-white border-indigo-400 hover:bg-indigo-500"
-                      : "bg-slate-700 text-slate-200 border-slate-600 hover:bg-slate-600"
-                  }`}
-                >
-                  Role: {user.role}
-                </button>
-              )}
-              <button
-                onClick={signOut}
-                title="Sign out to view Microsoft Entra Login Screen"
-                className="px-2.5 py-1.5 text-xs font-semibold text-slate-200 hover:text-white rounded-md bg-slate-700/80 hover:bg-red-600 transition-colors flex items-center gap-1 cursor-pointer"
-              >
-                <LogOut className="w-3.5 h-3.5" />
-                <span>Sign Out</span>
-              </button>
-            </div>
           </div>
         </div>
       </header>
 
       {/* Main Content Container */}
-      <main className="max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 space-y-5 flex-1">
+      <main className="max-w-7xl w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 space-y-4 sm:space-y-5 flex-1">
         {/* Maintenance Mode Alert Banner */}
         {adminSettings.permissions.maintenanceMode && (
-          <div className="rounded-xl bg-amber-950 text-amber-100 border border-amber-700 p-4 shadow-md flex flex-wrap items-center justify-between gap-4">
+          <div className="rounded-xl bg-amber-950 text-amber-100 border border-amber-700 p-3.5 sm:p-4 shadow-md flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3 text-xs">
               <Wrench className="w-5 h-5 text-amber-400 shrink-0" />
               <div>
@@ -338,7 +355,7 @@ export default function HomePage() {
 
         {/* Domain Guard Rejection Alert */}
         {domainError && (
-          <div className="rounded-xl bg-red-950 text-white border border-red-700 p-4 shadow-lg flex items-center justify-between gap-4">
+          <div className="rounded-xl bg-red-950 text-white border border-red-700 p-3.5 sm:p-4 shadow-lg flex items-center justify-between gap-3">
             <div className="flex items-center gap-3 text-xs">
               <ShieldAlert className="w-5 h-5 text-red-400 shrink-0" />
               <div>
@@ -357,8 +374,45 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* Scheduling Policy Highlights Bar */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {/* Collapsible Mobile Pill + Desktop 3-Column Policy Highlights */}
+        <details className="sm:hidden group bg-white rounded-xl border border-zinc-200 shadow-2xs overflow-hidden">
+          <summary className="px-3.5 py-2.5 text-xs font-bold text-zinc-800 flex items-center justify-between cursor-pointer list-none select-none">
+            <span className="flex items-center gap-2 truncate">
+              <Clock className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+              <span>
+                Lab Rules: 15m Grid • +{adminSettings.bookingLimits.cooldownBufferMinutes}m Buffer •{" "}
+                {adminSettings.bookingLimits.lateArrivalGraceMinutes}m Grace
+              </span>
+            </span>
+            <span className="text-[11px] font-semibold text-orange-600 shrink-0 ml-2 group-open:hidden">
+              Details ▾
+            </span>
+            <span className="text-[11px] font-semibold text-zinc-500 shrink-0 ml-2 hidden group-open:inline">
+              Hide ▴
+            </span>
+          </summary>
+          <div className="p-3 pt-0 space-y-2 border-t border-zinc-100 text-xs text-zinc-600">
+            <div className="pt-2">
+              <strong className="text-zinc-900">15-Min Grid + Buffer:</strong>{" "}
+              Slots snap to :00, :15, :30, :45 (up to{" "}
+              {adminSettings.bookingLimits.maxDurationMinutes}m) with a +
+              {adminSettings.bookingLimits.cooldownBufferMinutes}m cooldown buffer.
+            </div>
+            <div>
+              <strong className="text-zinc-900">Late-Arrival Auto-Cancel:</strong>{" "}
+              Unstarted jobs auto-cancel after{" "}
+              {adminSettings.bookingLimits.lateArrivalGraceMinutes}m if remaining
+              time before the next slot is insufficient.
+            </div>
+            <div>
+              <strong className="text-zinc-900">Early Completion Shift:</strong>{" "}
+              Clearing the bed early emails the next user a 1-click link to shift
+              up.
+            </div>
+          </div>
+        </details>
+
+        <div className="hidden sm:grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div className="bg-white rounded-xl border border-zinc-200 p-3.5 flex items-start gap-3 shadow-2xs">
             <div className="p-2 rounded-lg bg-blue-50 text-blue-600">
               <Clock className="w-4 h-4" />
@@ -422,9 +476,9 @@ export default function HomePage() {
         />
 
         {/* Calendar Toolbar & Legend */}
-        <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-3.5 rounded-xl border border-zinc-200 shadow-2xs">
+        <div className="flex flex-wrap items-center justify-between gap-2.5 bg-white p-3 sm:p-3.5 rounded-xl border border-zinc-200 shadow-2xs">
           {/* Week Navigation */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2">
             <button
               onClick={() => setCurrentWeekStart(addDays(currentWeekStart, -7))}
               className="p-1.5 rounded-lg border border-zinc-200 hover:bg-zinc-100 text-zinc-700 transition-colors cursor-pointer"
@@ -436,9 +490,9 @@ export default function HomePage() {
               onClick={() =>
                 setCurrentWeekStart(startOfWeek(new Date(), { weekStartsOn: 1 }))
               }
-              className="px-3 py-1.5 rounded-lg border border-zinc-200 hover:bg-zinc-100 text-xs font-semibold text-zinc-700 transition-colors cursor-pointer"
+              className="px-2.5 sm:px-3 py-1.5 rounded-lg border border-zinc-200 hover:bg-zinc-100 text-xs font-semibold text-zinc-700 transition-colors cursor-pointer"
             >
-              Today
+              This Week
             </button>
             <button
               onClick={() => setCurrentWeekStart(addDays(currentWeekStart, 7))}
@@ -447,20 +501,20 @@ export default function HomePage() {
             >
               <ChevronRight className="w-4 h-4" />
             </button>
-            <span className="text-sm font-bold text-zinc-900 ml-2">
+            <span className="text-xs sm:text-sm font-bold text-zinc-900 ml-1 sm:ml-2">
               {format(currentWeekStart, "MMM d")} –{" "}
               {format(weekEnd, "MMM d, yyyy")}
             </span>
           </div>
 
           {/* Status Legend & Filter */}
-          <div className="flex flex-wrap items-center gap-4 text-xs">
+          <div className="flex flex-wrap items-center gap-3 sm:gap-4 text-[11px] sm:text-xs">
             <div className="flex items-center gap-1.5">
-              <span className="w-3 h-3 rounded-xs bg-blue-600 inline-block" />
+              <span className="w-2.5 h-2.5 sm:w-3 sm:h-3 rounded-xs bg-blue-600 inline-block" />
               <span className="text-zinc-600 font-medium">Scheduled</span>
             </div>
             <div className="flex items-center gap-1.5">
-              <span className="w-3 h-3 rounded-xs bg-amber-600 inline-block" />
+              <span className="w-2.5 h-2.5 sm:w-3 sm:h-3 rounded-xs bg-amber-600 inline-block" />
               <span className="text-zinc-600 font-medium">In Progress</span>
             </div>
             <label className="flex items-center gap-1.5 cursor-pointer select-none text-zinc-600 font-medium">
@@ -470,19 +524,19 @@ export default function HomePage() {
                 onChange={(e) => setShowCompleted(e.target.checked)}
                 className="rounded text-emerald-600"
               />
-              <span className="w-3 h-3 rounded-xs bg-emerald-700 inline-block" />
-              <span>Show Completed</span>
+              <span className="w-2.5 h-2.5 sm:w-3 sm:h-3 rounded-xs bg-emerald-700 inline-block" />
+              <span>Completed</span>
             </label>
             {isAdmin && (
-              <span className="px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 font-semibold flex items-center gap-1">
+              <span className="hidden md:inline-flex px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 font-semibold items-center gap-1">
                 <Shield className="w-3 h-3" />
-                Admin Mode: Click any block to override
+                Admin Mode: Tap any block to edit
               </span>
             )}
           </div>
         </div>
 
-        {/* 7-Day x 96-Slot Visual Weekly Calendar */}
+        {/* Responsive 1D / 3D / 7D Visual Calendar */}
         <WeeklyCalendar
           bookings={bookings}
           currentWeekStart={currentWeekStart}
@@ -494,29 +548,77 @@ export default function HomePage() {
           onAdminClickBooking={(booking) => setAdminSelectedBooking(booking)}
         />
 
-        {/* Recent & Canceled Reservations Log Table (Admin Only) */}
-        {isAdmin && (
+        {/* Recent & Canceled Reservations Log (Admin Only - Cards on Mobile, Table on Desktop) */}
+        {isAdmin && bookings.length > 0 && (
           <div className="bg-white rounded-xl border border-zinc-200 overflow-hidden shadow-2xs">
             <div className="px-4 py-3 bg-zinc-50 border-b border-zinc-200 flex items-center justify-between">
               <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-600 flex items-center gap-1.5">
                 <ListFilter className="w-3.5 h-3.5" />
-                All Queue Reservations &amp; Status Audit Log
+                All Queue Reservations ({bookings.length})
               </h3>
-              <span className="text-[11px] text-zinc-400">
-                PostgreSQL GiST Exclusion Constraint: prevent_booking_overlap
-              </span>
             </div>
-            <div className="overflow-x-auto">
+
+            {/* Mobile Card List (< 768px) */}
+            <div className="md:hidden divide-y divide-zinc-100">
+              {bookings.map((b) => (
+                <div
+                  key={b.id}
+                  className="p-3.5 flex items-center justify-between gap-3 text-xs"
+                >
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-zinc-900 truncate">
+                        {b.file_name}
+                      </span>
+                      <span
+                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase shrink-0 ${
+                          b.status === "in_progress"
+                            ? "bg-amber-100 text-amber-800"
+                            : b.status === "scheduled"
+                            ? "bg-blue-100 text-blue-800"
+                            : b.status === "completed"
+                            ? "bg-emerald-100 text-emerald-800"
+                            : "bg-red-100 text-red-800"
+                        }`}
+                      >
+                        {b.status}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-zinc-500 truncate">
+                      {b.user_email} •{" "}
+                      {format(new Date(b.start_time), "EEE MMM d, HH:mm")}–
+                      {format(new Date(b.end_time), "HH:mm")} (
+                      {b.duration_minutes}m)
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setAdminSelectedBooking(b)}
+                    className="px-3 py-1.5 rounded-lg bg-indigo-50 text-indigo-700 border border-indigo-200 font-bold text-xs shrink-0 cursor-pointer"
+                  >
+                    Edit
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            {/* Desktop Table (>= 768px) */}
+            <div className="hidden md:block overflow-x-auto">
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr className="border-b border-zinc-200 text-zinc-500 bg-zinc-50/50">
                     <th className="py-2.5 px-4 font-semibold">File Name</th>
-                    <th className="py-2.5 px-4 font-semibold">User (@illinois.edu)</th>
+                    <th className="py-2.5 px-4 font-semibold">
+                      User (@illinois.edu)
+                    </th>
                     <th className="py-2.5 px-4 font-semibold">Start Time</th>
-                    <th className="py-2.5 px-4 font-semibold">End Time (+10m)</th>
+                    <th className="py-2.5 px-4 font-semibold">
+                      End Time (+10m)
+                    </th>
                     <th className="py-2.5 px-4 font-semibold">Duration</th>
                     <th className="py-2.5 px-4 font-semibold">Status</th>
-                    <th className="py-2.5 px-4 font-semibold text-right">Action</th>
+                    <th className="py-2.5 px-4 font-semibold text-right">
+                      Action
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-100">
@@ -525,7 +627,9 @@ export default function HomePage() {
                       <td className="py-2.5 px-4 font-semibold text-zinc-900">
                         {b.file_name}
                       </td>
-                      <td className="py-2.5 px-4 text-zinc-600">{b.user_email}</td>
+                      <td className="py-2.5 px-4 text-zinc-600">
+                        {b.user_email}
+                      </td>
                       <td className="py-2.5 px-4 text-zinc-700">
                         {format(new Date(b.start_time), "EEE MMM d, HH:mm")}
                       </td>
@@ -569,6 +673,20 @@ export default function HomePage() {
         )}
       </main>
 
+      {/* Sticky Bottom "Book Print Slot" Action Bar on Mobile (< 640px) */}
+      <div className="fixed bottom-0 inset-x-0 z-30 bg-white/95 backdrop-blur-xs border-t border-zinc-200 px-3 py-2.5 shadow-2xl sm:hidden flex items-center gap-2">
+        <button
+          onClick={() => {
+            setSelectedSlotTime(snapTo15MinSlot(new Date(), true));
+            setIsBookingModalOpen(true);
+          }}
+          className="flex-1 py-3 px-4 rounded-xl bg-[#FF5F05] active:bg-orange-700 text-white font-bold text-sm flex items-center justify-center gap-2 shadow-md cursor-pointer"
+        >
+          <Plus className="w-4 h-4" />
+          <span>Book Print Slot</span>
+        </button>
+      </div>
+
       {/* New Booking Modal */}
       <BookingModal
         isOpen={isBookingModalOpen}
@@ -586,26 +704,6 @@ export default function HomePage() {
         onAdminOverride={handleAdminOverride}
         onUserCancel={handleCancelBooking}
       />
-
-      {/* Admin & Dev Simulation Toolbar (Hidden in Public User View) */}
-      {isAdmin && (
-        <DevAuthBanner
-          currentUser={user}
-          onSwitchPersona={switchDevPersona}
-          onTestExternalRejection={testExternalDomainRejection}
-          onTriggerLateCron={async () => {
-            const res = await runAutoCancelLateCheck();
-            return {
-              canceledCount: res.canceledBookings.length,
-              warnedCount: res.warnedBookings.length,
-            };
-          }}
-          onResetDemo={() => {
-            resetDemoData();
-          }}
-          onConnectOutlookMail={connectOutlookMailSend}
-        />
-      )}
     </div>
   );
 }

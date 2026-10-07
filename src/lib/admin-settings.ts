@@ -169,7 +169,7 @@ export function createDefaultAdminSettings(): AdminSettings {
   return {
     permissions: {
       superAdminEmail: SUPER_ADMIN_EMAIL,
-      adminEmails: [SUPER_ADMIN_EMAIL, "admin@illinois.edu"],
+      adminEmails: [SUPER_ADMIN_EMAIL],
       bannedEmails: [],
       allowedDomains: ["illinois.edu"],
       maintenanceMode: false,
@@ -220,6 +220,14 @@ const CLOUD_SETTINGS_OBJECT_URL =
   "https://api.restful-api.dev/objects/ff808181a09d98f701a117663a7a18ed";
 const CLOUD_SETTINGS_NTFY_TOPIC = "https://ntfy.sh/uiuc_bambu_x1c_settings_v2";
 
+const LEGACY_DEMO_EMAILS = new Set([
+  "admin@illinois.edu",
+  "mchen42@illinois.edu",
+  "test.admin@illinois.edu",
+  "staff1@illinois.edu",
+  "external.user@gmail.com",
+]);
+
 function isBrowserRuntime(): boolean {
   return (
     typeof window !== "undefined" &&
@@ -235,7 +243,8 @@ function ensureSuperAdminProtected(settings: AdminSettings): AdminSettings {
       ...(settings.permissions?.adminEmails || []).map((e) => {
         const clean = e.trim().toLowerCase();
         if (!clean) return "";
-        return clean.includes("@") ? clean : `${clean}@illinois.edu`;
+        const full = clean.includes("@") ? clean : `${clean}@illinois.edu`;
+        return LEGACY_DEMO_EMAILS.has(full) ? "" : full;
       }),
     ])
   ).filter(Boolean);
