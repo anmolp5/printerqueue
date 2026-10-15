@@ -49,7 +49,7 @@ import {
   subscribeToAdminSettings,
 } from "@/lib/admin-settings";
 import { snapTo15MinSlot } from "@/lib/scheduling";
-import { AdminSettings, BookingStatus, CalendarBooking } from "@/lib/types";
+import { AdminSettings, BookingStatus, CalendarBooking, UserProfile } from "@/lib/types";
 
 export default function HomePage() {
   const {
