@@ -29,6 +29,8 @@ import {
   RotateCcw,
   Sparkles,
   Info,
+  Zap,
+  ShieldAlert,
 } from "lucide-react";
 import { UserProfile, CalendarBooking, BookingStatus } from "@/lib/types";
 import { WeeklyCalendar } from "@/components/WeeklyCalendar";
@@ -121,6 +123,38 @@ export const P1sTestingSandbox: React.FC<P1sTestingSandboxProps> = ({
     setTimeout(() => {
       setToastMessage((prev) => (prev?.text === text ? null : prev));
     }, 4500);
+  };
+
+  // --- Live Guard Evaluation State ---
+  const [guardReport, setGuardReport] = useState<any | null>(null);
+  const [isEvaluatingGuard, setIsEvaluatingGuard] = useState(false);
+
+  // Trigger on-demand Guard evaluation for P1S Sandbox
+  const handleEvaluateGuard = async () => {
+    setIsEvaluatingGuard(true);
+    try {
+      const res = await fetch("https://bambu-cloud-guard.anmolp5.workers.dev/p1s/evaluate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bookings: p1sBookings }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setGuardReport(data);
+        const st = data?.report?.status || "ok";
+        const dry = data?.report?.dryRun ? "DRY RUN" : "LIVE (Cancel Armed)";
+        showToast(
+          "success",
+          `Guard evaluation [${st.toUpperCase()}]: P1S dryRun is OFF (Physical enforcement armed).`
+        );
+      } else {
+        showToast("error", "Failed to evaluate P1S guard policy via Cloudflare worker.");
+      }
+    } catch (err: any) {
+      showToast("error", err?.message || "Error contacting guard worker.");
+    } finally {
+      setIsEvaluatingGuard(false);
+    }
   };
 
   // Subscribe to reactive P1S store updates
@@ -492,6 +526,125 @@ export const P1sTestingSandbox: React.FC<P1sTestingSandboxProps> = ({
               : "Just now"}
           </div>
         </div>
+      </div>
+
+      {/* ==================== 1.5. LIVE POLICY & GUARD ENFORCEMENT BANNER ==================== */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 sm:p-5 shadow-lg space-y-4 text-white">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-orange-500/20 border border-orange-500/40 flex items-center justify-center text-[#FF5F05]">
+              <Zap className="w-4 h-4" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold tracking-tight text-white flex items-center gap-2">
+                Bambu Cloud Guard Policy Enforcement
+                <span className="text-[10px] px-2 py-0.5 rounded-full font-mono bg-indigo-500/20 text-indigo-300 border border-indigo-500/40">
+                  Cron: 1m
+                </span>
+              </h3>
+              <p className="text-xs text-slate-400">
+                Independent Cloudflare Workers evaluation loop for P1S Sandbox vs Main UIUC Lab X1-Carbon.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleEvaluateGuard}
+              disabled={isEvaluatingGuard}
+              className="px-3.5 py-1.5 rounded-lg bg-[#FF5F05] hover:bg-orange-600 disabled:opacity-50 text-white text-xs font-bold flex items-center gap-2 shadow cursor-pointer transition-colors"
+            >
+              <RefreshCw
+                className={`w-3.5 h-3.5 ${isEvaluatingGuard ? "animate-spin" : ""}`}
+              />
+              <span>{isEvaluatingGuard ? "Evaluating..." : "Evaluate Guard Rules Now"}</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Dual Mode Status Badges */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {/* Badge 1: P1S Real Hardware Enforcement */}
+          <div className="p-3.5 rounded-lg bg-emerald-950/40 border border-emerald-500/40 flex items-start gap-3">
+            <div className="w-3 h-3 rounded-full bg-emerald-400 mt-1 shrink-0 animate-pulse" />
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-emerald-300">
+                  P1S Hardware: Live Enforcement Active
+                </span>
+                <span className="px-1.5 py-0.2 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-200 border border-emerald-500/40">
+                  dryRun: OFF
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-300 leading-relaxed">
+                Physical Bambu Lab cancel, pause, and light-off commands are <strong>LIVE</strong>. Violations on P1S (SN: <code>01P00C611402117</code>) will trigger hardware stop actions after the 1-minute grace period.
+              </p>
+            </div>
+          </div>
+
+          {/* Badge 2: Main Lab X1C Simulation Guard */}
+          <div className="p-3.5 rounded-lg bg-blue-950/40 border border-blue-500/40 flex items-start gap-3">
+            <ShieldAlert className="w-4 h-4 text-blue-400 mt-0.5 shrink-0" />
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-blue-300">
+                  Main Lab X1-Carbon: Protected
+                </span>
+                <span className="px-1.5 py-0.2 rounded text-[10px] font-mono font-bold bg-blue-500/20 text-blue-200 border border-blue-500/40">
+                  dryRun: ON
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-300 leading-relaxed">
+                Safe lab simulation mode. The main X1C queue runs only simulations and alerts — physical cancel/pause commands are <strong>NEVER</strong> sent to lab students during your torture tests.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Guard Report Output Details if Evaluated */}
+        {guardReport && (
+          <div className="p-3.5 rounded-lg bg-slate-950 border border-slate-800 text-xs space-y-2">
+            <div className="flex items-center justify-between text-slate-400 border-b border-slate-800/80 pb-1.5">
+              <span className="font-semibold text-slate-200">
+                Latest Evaluation Result ({guardReport.printer})
+              </span>
+              <span className="font-mono text-[11px]">
+                {guardReport.timestamp ? format(new Date(guardReport.timestamp), "h:mm:ss a") : ""}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
+              <div>
+                <span className="text-slate-500 block">Status</span>
+                <span className="font-mono font-bold text-orange-400">
+                  {guardReport.report?.status || "N/A"}
+                </span>
+              </div>
+              <div>
+                <span className="text-slate-500 block">Enforcement</span>
+                <span className="font-mono font-bold text-emerald-400">
+                  {guardReport.enforcement || "LIVE"}
+                </span>
+              </div>
+              <div>
+                <span className="text-slate-500 block">P1S Chamber Light</span>
+                <span className="font-mono font-bold text-slate-300">
+                  {guardReport.report?.p1sLight?.chamberLight?.toUpperCase() || "OFF"} (auto-off active)
+                </span>
+              </div>
+              <div>
+                <span className="text-slate-500 block">Action / Early Shift</span>
+                <span className="font-mono font-bold text-slate-300">
+                  {guardReport.report?.action || (guardReport.report?.earlyFinishHandled ? "Trimmed Early" : "None")}
+                </span>
+              </div>
+            </div>
+            {guardReport.report?.message && (
+              <div className="text-[11px] text-amber-300/90 pt-1 border-t border-slate-800/60 font-mono">
+                {guardReport.report.message}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ==================== 2. SANDBOX CONTROLS & TESTBENCH BAR ==================== */}

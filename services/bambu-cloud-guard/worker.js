@@ -215,21 +215,20 @@ async function checkAndAutoTurnOffP1sLight(connectFn, env, guardConfig, dryRun) 
     const isLightOn = chamberLight && chamberLight.toLowerCase() === 'on';
 
     if (isLightOn) {
-      if (!dryRun) {
-        try {
-          await sendBambuLightCommand(connectFn, p1sConfig, 'off');
-        } catch (cmdErr) {
-          console.warn('[P1S Light Command Error]', cmdErr.message || cmdErr);
-        }
+      // Always physically turn off the chamber light on P1S hardware
+      try {
+        await sendBambuLightCommand(connectFn, p1sConfig, 'off');
+      } catch (cmdErr) {
+        console.warn('[P1S Light Command Error]', cmdErr.message || cmdErr);
       }
       await setStoredState(env, 'p1s_chamber_light', 'OFF');
       return {
         checked: true,
         serialNumber: p1sSerial,
         action: 'turned_off',
-        dryRun,
+        dryRun: false,
         previousState: 'on',
-        newState: dryRun ? 'on (dryRun)' : 'off'
+        newState: 'off'
       };
     }
 
@@ -248,9 +247,10 @@ async function checkAndAutoTurnOffP1sLight(connectFn, env, guardConfig, dryRun) 
 /**
  * Core Evaluation Cycle: runs every 1 minute
  */
-async function evaluateGuardCycle(env) {
+async function evaluateGuardCycle(env, overrideOptions = {}) {
   const token = env.BAMBU_TOKEN || DEFAULT_CONFIG.bambuToken;
-  const serialNumber = env.BAMBU_SERIAL || DEFAULT_CONFIG.serialNumber;
+  const p1sSerial = env.BAMBU_P1S_SERIAL || DEFAULT_CONFIG.p1sSerialNumber || '01P00C611402117';
+  const serialNumber = overrideOptions.serialNumber || env.BAMBU_SERIAL || DEFAULT_CONFIG.serialNumber;
   const uid = env.BAMBU_UID || DEFAULT_CONFIG.bambuUid;
   const settingsUrl = env.CLOUD_SETTINGS_URL || DEFAULT_CONFIG.cloudSettingsUrl;
 
@@ -258,7 +258,12 @@ async function evaluateGuardCycle(env) {
   const settings = await fetchPortalSettings(settingsUrl);
   const guardConfig = settings?.bambuGuard || {};
   const enabled = guardConfig.enabled !== false;
-  const dryRun = guardConfig.dryRun !== false; // Default safe: dry-run true
+
+  // DRY RUN CONFIGURATION:
+  // - P1S is explicitly LIVE (dryRun: false) -> Automated Cancel/Stop, Pause, and Light-Off physically execute on real hardware!
+  // - Main Lab X1C is explicitly SAFE (dryRun: true) -> Real student prints are NEVER touched during testing!
+  const isP1s = overrideOptions.isP1s || serialNumber === p1sSerial;
+  const dryRun = isP1s ? false : true;
   const graceMinutes = guardConfig.gracePeriodMinutes || 1; // default: 1 minute
   const similarityThreshold = guardConfig.similarityThreshold || 0.65;
   const recipients = guardConfig.alertRecipients || [DEFAULT_CONFIG.superAdminEmail];
@@ -272,8 +277,8 @@ async function evaluateGuardCycle(env) {
     return { status: 'skipped', reason: 'Bambu Guard disabled in admin settings' };
   }
 
-  // P1S Light Auto-Shutoff Check
-  const p1sLightReport = await checkAndAutoTurnOffP1sLight(connect, env, guardConfig, dryRun);
+  // P1S Light Auto-Shutoff Check (Always physically turn off if on)
+  const p1sLightReport = await checkAndAutoTurnOffP1sLight(connect, env, guardConfig, false);
 
   // 2. Query Bambu Cloud MQTT for real-time printer telemetry
   const mqttConfig = { host: 'us.mqtt.bambulab.com', port: 8883, uid, token, serialNumber, timeoutMs: 14000 };
@@ -284,15 +289,16 @@ async function evaluateGuardCycle(env) {
   const isPrinting = state === 'RUNNING' || state === 'PREPARE';
 
   guardState.lastEvaluatedAt = new Date().toISOString();
+  const stateKeyPrefix = `${serialNumber}_`;
 
   // If printer is IDLE or FINISH, clear tracking timers and evaluate Early Finish Detection
   if (!isPrinting) {
-    await deleteStoredState(env, 'unscheduledFirstSeenAt');
-    await deleteStoredState(env, 'stoppedRogueAlertSent');
-    await deleteStoredState(env, 'mismatchAlertSent');
+    await deleteStoredState(env, `${stateKeyPrefix}unscheduledFirstSeenAt`);
+    await deleteStoredState(env, `${stateKeyPrefix}stoppedRogueAlertSent`);
+    await deleteStoredState(env, `${stateKeyPrefix}mismatchAlertSent`);
 
     const now = new Date();
-    const rawBookings = (settings?.bookings || []).map(normalizeBooking).filter(Boolean);
+    const rawBookings = (overrideOptions.bookings || (isP1s ? (guardState.p1sBookings || []) : (settings?.bookings || []))).map(normalizeBooking).filter(Boolean);
 
     // Active or in_progress bookings
     const activeBookings = rawBookings.filter((b) => {
@@ -312,22 +318,32 @@ async function evaluateGuardCycle(env) {
       const hasRemainingTime = remainingMs > (cooldownBufferMinutes + 1) * 60 * 1000;
 
       // If printer state is FINISH or IDLE (and was printing or activeBooking has remaining time), trigger early completion
-      if (guardState.wasPrinting || hasRemainingTime || candidateBooking.status === 'in_progress') {
+      if (guardState[`${stateKeyPrefix}wasPrinting`] || hasRemainingTime || candidateBooking.status === 'in_progress') {
         trimmedEndTime = new Date(now.getTime() + cooldownBufferMinutes * 60 * 1000).toISOString();
-        earlyFinishHandled = await triggerEarlyCompletionInCloud(
-          settingsUrl,
-          candidateBooking.id,
-          trimmedEndTime,
-          now.toISOString()
-        );
+        if (!isP1s) {
+          earlyFinishHandled = await triggerEarlyCompletionInCloud(
+            settingsUrl,
+            candidateBooking.id,
+            trimmedEndTime,
+            now.toISOString()
+          );
+        } else {
+          candidateBooking.status = 'completed';
+          candidateBooking.endTime = trimmedEndTime;
+          candidateBooking.end_time = trimmedEndTime;
+          earlyFinishHandled = true;
+        }
       }
     }
 
-    guardState.wasPrinting = false;
+    guardState[`${stateKeyPrefix}wasPrinting`] = false;
 
     return {
       status: earlyFinishHandled ? 'early_completion_triggered' : 'idle',
       printerState: state,
+      printerName: isP1s ? 'Bambu Lab P1S' : 'Bambu Lab X1-Carbon',
+      serialNumber,
+      dryRun,
       earlyFinishHandled,
       trimmedEndTime,
       candidateBookingId: candidateBooking?.id,
@@ -337,11 +353,11 @@ async function evaluateGuardCycle(env) {
   }
 
   // Printer IS printing
-  guardState.wasPrinting = true;
+  guardState[`${stateKeyPrefix}wasPrinting`] = true;
 
   // 3. Printer is printing: evaluate bookings
   const now = new Date();
-  const rawBookings = (settings?.bookings || []).map(normalizeBooking).filter(Boolean);
+  const rawBookings = (overrideOptions.bookings || (isP1s ? (guardState.p1sBookings || []) : (settings?.bookings || []))).map(normalizeBooking).filter(Boolean);
 
   // Active bookings (currently inside their reserved time slot)
   const activeBookings = rawBookings.filter((b) => {
@@ -359,7 +375,7 @@ async function evaluateGuardCycle(env) {
 
     if (!matchResult.isMatch) {
       // Sliced file mismatch during user's reserved slot!
-      const mismatchSent = await getStoredState(env, 'mismatchAlertSent', false);
+      const mismatchSent = await getStoredState(env, `${stateKeyPrefix}mismatchAlertSent`, false);
       if (!mismatchSent || mismatchSent === 'false') {
         await executeGuardAction(connect, mqttConfig, fileMismatchAction, dryRun);
 
@@ -372,8 +388,8 @@ async function evaluateGuardCycle(env) {
 
         await sendGuardAlert({
           recipients,
-          subject: `⚠️ [ACTION: ${fileMismatchAction.toUpperCase()}] File Mismatch: Printer ${actionText} for "${activeBooking.userName || activeBooking.userEmail}"`,
-          title: `Print ${actionText}: Sliced File Mismatch Detected`,
+          subject: `⚠️ [ACTION: ${fileMismatchAction.toUpperCase()}] File Mismatch: Printer ${actionText} on ${isP1s ? 'P1S' : 'X1C'} for "${activeBooking.userName || activeBooking.userEmail}"`,
+          title: `Print ${actionText}: Sliced File Mismatch Detected (${isP1s ? 'P1S Sandbox' : 'X1C Lab'})`,
           severity: fileMismatchAction === 'cancel' ? 'critical' : 'warning',
           message: `A print was started during a reservation for "${activeBooking.userEmail}", but the physical file name does not match the booking:\n\n• Booked File: "${activeBooking.fileName}" (Normalized: "${matchResult.normalizedBooked}")\n• Physical File: "${currentFile}" (Normalized: "${matchResult.normalizedActual}")\n• Similarity Match: ${Math.round(matchResult.score * 100)}% (Minimum required: ${Math.round(similarityThreshold * 100)}%)\n• Action Taken: ${fileMismatchAction.toUpperCase()}\n\n${dryRun ? `⚠️ [DRY RUN] A real ${fileMismatchAction.toUpperCase()} command WOULD have been issued.` : actionDesc}`,
           printerInfo: {
@@ -387,12 +403,14 @@ async function evaluateGuardCycle(env) {
           dryRun
         });
 
-        await setStoredState(env, 'mismatchAlertSent', 'true');
+        await setStoredState(env, `${stateKeyPrefix}mismatchAlertSent`, 'true');
       }
 
       return {
         status: `mismatch_${fileMismatchAction}`,
         action: fileMismatchAction,
+        printerName: isP1s ? 'Bambu Lab P1S' : 'Bambu Lab X1-Carbon',
+        serialNumber,
         dryRun,
         bookedFileName: activeBooking.fileName,
         actualFileName: currentFile,
@@ -407,7 +425,7 @@ async function evaluateGuardCycle(env) {
     const printerRemainingMinutes = Number(printerStatus.mc_remaining_time || 0);
 
     if (printerRemainingMinutes > remainingReservationMinutes + 15) {
-      const durationSent = await getStoredState(env, `durationAlertSent_${activeBooking.id}`, false);
+      const durationSent = await getStoredState(env, `${stateKeyPrefix}durationAlertSent_${activeBooking.id}`, false);
       if (!durationSent || durationSent === 'false') {
         await executeGuardAction(connect, mqttConfig, durationExceededAction, dryRun);
 
@@ -452,17 +470,25 @@ async function evaluateGuardCycle(env) {
     }
 
     // Authorized Print Match! Clear rogue timers and auto-start booking on portal if not yet in_progress
-    await deleteStoredState(env, 'unscheduledFirstSeenAt');
-    await deleteStoredState(env, 'stoppedRogueAlertSent');
+    await deleteStoredState(env, `${stateKeyPrefix}unscheduledFirstSeenAt`);
+    await deleteStoredState(env, `${stateKeyPrefix}stoppedRogueAlertSent`);
 
     let autoStarted = false;
     if (activeBooking.status !== 'in_progress') {
-      autoStarted = await updateBookingStatusInCloud(settingsUrl, activeBooking.id, 'in_progress');
+      if (!isP1s) {
+        autoStarted = await updateBookingStatusInCloud(settingsUrl, activeBooking.id, 'in_progress');
+      } else {
+        activeBooking.status = 'in_progress';
+        autoStarted = true;
+      }
     }
 
     return {
       status: 'authorized_print',
       matched: true,
+      printerName: isP1s ? 'Bambu Lab P1S' : 'Bambu Lab X1-Carbon',
+      serialNumber,
+      dryRun,
       autoStarted,
       similarity: matchResult.score,
       bookedFileName: activeBooking.fileName,
@@ -495,20 +521,25 @@ async function evaluateGuardCycle(env) {
 
   if (earlyMatch) {
     // Student arrived early for their upcoming reservation! DO NOT CANCEL!
-    await deleteStoredState(env, 'unscheduledFirstSeenAt');
-    await deleteStoredState(env, 'stoppedRogueAlertSent');
+    await deleteStoredState(env, `${stateKeyPrefix}unscheduledFirstSeenAt`);
+    await deleteStoredState(env, `${stateKeyPrefix}stoppedRogueAlertSent`);
 
     let autoStarted = false;
     if (earlyMatch.status !== 'in_progress') {
-      autoStarted = await updateBookingStatusInCloud(settingsUrl, earlyMatch.id, 'in_progress');
+      if (!isP1s) {
+        autoStarted = await updateBookingStatusInCloud(settingsUrl, earlyMatch.id, 'in_progress');
+      } else {
+        earlyMatch.status = 'in_progress';
+        autoStarted = true;
+      }
 
       // Send informational push alert notifying that early print has authorized start
       await sendGuardAlert({
         recipients,
-        subject: `ℹ️ [EARLY START] Print Started Early: "${currentFile}"`,
-        title: 'Early Arrival Authorized: Print Started',
+        subject: `ℹ️ [EARLY START] Print Started Early: "${currentFile}" on ${isP1s ? 'P1S' : 'X1C'}`,
+        title: `Early Arrival Authorized: Print Started (${isP1s ? 'P1S Sandbox' : 'X1C Lab'})`,
         severity: 'info',
-        message: `Student "${earlyMatch.userName}" (${earlyMatch.userEmail}) arrived up to 30 minutes early for their scheduled slot (${new Date(earlyMatch.startTime).toLocaleTimeString()}).\n\nFile "${currentFile}" matched reservation "${earlyMatch.fileName}" (${Math.round(earlyMatchResult.score * 100)}% match).\n\nBooking status has been automatically updated to IN PROGRESS on the queue portal.`,
+        message: `Student "${earlyMatch.userName}" (${earlyMatch.userEmail}) arrived up to 30 minutes early for their scheduled slot (${new Date(earlyMatch.startTime).toLocaleTimeString()}).\n\nFile "${currentFile}" matched reservation "${earlyMatch.fileName}" (${Math.round(earlyMatchResult.score * 100)}% match).\n\nBooking status has been automatically updated to IN PROGRESS.`,
         printerInfo: {
           serialNumber,
           fileName: currentFile,
@@ -524,6 +555,9 @@ async function evaluateGuardCycle(env) {
     return {
       status: 'authorized_early_start',
       matched: true,
+      printerName: isP1s ? 'Bambu Lab P1S' : 'Bambu Lab X1-Carbon',
+      serialNumber,
+      dryRun,
       autoStarted,
       bookingId: earlyMatch.id,
       userEmail: earlyMatch.userEmail,
@@ -537,11 +571,11 @@ async function evaluateGuardCycle(env) {
   }
 
   // ==================== CASE C: UNSCHEDULED / ROGUE PRINT (1-MIN GRACE PERIOD) ====================
-  let firstSeenStr = await getStoredState(env, 'unscheduledFirstSeenAt', null);
+  let firstSeenStr = await getStoredState(env, `${stateKeyPrefix}unscheduledFirstSeenAt`, null);
   let firstSeen = firstSeenStr ? Number(firstSeenStr) : null;
   if (!firstSeen) {
     firstSeen = Date.now();
-    await setStoredState(env, 'unscheduledFirstSeenAt', firstSeen);
+    await setStoredState(env, `${stateKeyPrefix}unscheduledFirstSeenAt`, firstSeen);
   }
 
   const elapsedMs = Date.now() - firstSeen;
@@ -552,32 +586,35 @@ async function evaluateGuardCycle(env) {
     return {
       status: 'grace_period',
       printerState: state,
+      printerName: isP1s ? 'Bambu Lab P1S' : 'Bambu Lab X1-Carbon',
+      serialNumber,
+      dryRun,
       currentFile,
       elapsedSeconds: Math.round(elapsedMs / 1000),
       graceRemainingSec,
-      message: `Unscheduled print detected. Waiting ${graceMinutes}-min grace period (${graceRemainingSec}s remaining).`,
+      message: `Unscheduled print detected on ${isP1s ? 'P1S Sandbox' : 'X1C Lab'}. Waiting ${graceMinutes}-min grace period (${graceRemainingSec}s remaining).`,
       p1sLight: p1sLightReport
     };
   }
 
   // Grace period expired! Issue dynamic enforcement command & alert
-  const stoppedSent = await getStoredState(env, 'stoppedRogueAlertSent', false);
+  const stoppedSent = await getStoredState(env, `${stateKeyPrefix}stoppedRogueAlertSent`, false);
   if (!stoppedSent || stoppedSent === 'false') {
     await executeGuardAction(connect, mqttConfig, unscheduledPrintAction, dryRun);
 
     const actionText = unscheduledPrintAction === 'cancel' ? 'Canceled' : unscheduledPrintAction === 'pause' ? 'Paused' : 'Detected (Alert Only)';
     const actionDesc = unscheduledPrintAction === 'cancel'
-      ? 'The print was automatically CANCELED (stopped) to protect lab resources.'
+      ? `The print was automatically CANCELED (stopped) on ${isP1s ? 'P1S Sandbox' : 'X1C Lab'} to protect resources.`
       : unscheduledPrintAction === 'pause'
-      ? 'The print was automatically PAUSED to allow admin inspection.'
+      ? `The print was automatically PAUSED on ${isP1s ? 'P1S Sandbox' : 'X1C Lab'} to allow admin inspection.`
       : 'Policy is configured to ALERT ONLY: No physical command was dispatched.';
 
     await sendGuardAlert({
       recipients,
-      subject: `🚨 [ACTION: ${unscheduledPrintAction.toUpperCase()}] Unscheduled Print ${actionText}: "${currentFile}"`,
+      subject: `🚨 [ACTION: ${unscheduledPrintAction.toUpperCase()}] Unscheduled Print ${actionText}: "${currentFile}" on ${isP1s ? 'P1S' : 'X1C'}`,
       title: `Unscheduled Print ${actionText} (Grace Period Expired)`,
       severity: unscheduledPrintAction === 'none' ? 'warning' : 'critical',
-      message: `A print was started on the Bambu Lab X1-Carbon without an active or upcoming reservation on the portal.\n\nThe system waited the full ${graceMinutes}-minute grace period for a reservation to be created, but none was found.\n\nEnforcement Policy: ${unscheduledPrintAction.toUpperCase()}\n\n${dryRun ? `⚠️ [DRY RUN] A real ${unscheduledPrintAction.toUpperCase()} command WOULD have been issued.` : actionDesc}`,
+      message: `A print was started on ${isP1s ? 'Bambu Lab P1S' : 'Bambu Lab X1-Carbon'} without an active or upcoming reservation on the portal.\n\nThe system waited the full ${graceMinutes}-minute grace period for a reservation to be created, but none was found.\n\nEnforcement Policy: ${unscheduledPrintAction.toUpperCase()}\n\n${dryRun ? `⚠️ [DRY RUN] A real ${unscheduledPrintAction.toUpperCase()} command WOULD have been issued.` : actionDesc}`,
       printerInfo: {
         serialNumber,
         fileName: currentFile,
@@ -589,12 +626,14 @@ async function evaluateGuardCycle(env) {
       dryRun
     });
 
-    await setStoredState(env, 'stoppedRogueAlertSent', 'true');
+    await setStoredState(env, `${stateKeyPrefix}stoppedRogueAlertSent`, 'true');
   }
 
   return {
     status: `rogue_${unscheduledPrintAction}`,
     action: unscheduledPrintAction,
+    printerName: isP1s ? 'Bambu Lab P1S' : 'Bambu Lab X1-Carbon',
+    serialNumber,
     dryRun,
     currentFile,
     elapsedMinutes: Math.round(elapsedMs / 60000),
@@ -606,8 +645,19 @@ export default {
   // 1. Cloudflare Scheduled Cron Handler (Runs every 1 minute)
   async scheduled(event, env, ctx) {
     try {
-      const result = await evaluateGuardCycle(env);
-      console.log('[Bambu Guard Cron]', JSON.stringify(result));
+      // 1. Evaluate Main UIUC Lab X1-Carbon (dryRun: true -> SAFE simulation only, protected)
+      const x1cReport = await evaluateGuardCycle(env, {
+        serialNumber: env.BAMBU_SERIAL || DEFAULT_CONFIG.serialNumber,
+        isP1s: false
+      });
+      console.log('[Main X1C Guard (Safe Dry Run)]', JSON.stringify(x1cReport));
+
+      // 2. Evaluate User P1S Sandbox (dryRun: false -> LIVE physical auto-cancel & light off)
+      const p1sReport = await evaluateGuardCycle(env, {
+        serialNumber: env.BAMBU_P1S_SERIAL || DEFAULT_CONFIG.p1sSerialNumber || '01P00C611402117',
+        isP1s: true
+      });
+      console.log('[P1S Guard (LIVE Auto-Cancel)]', JSON.stringify(p1sReport));
     } catch (err) {
       console.error('[Bambu Guard Error]', err.message || err);
     }
@@ -706,6 +756,49 @@ export default {
             error: err.message || String(err),
             timestamp: new Date().toISOString()
           }, null, 2),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+    }
+
+    // P1S Guard Evaluation Endpoint (Runs LIVE: dryRun = false)
+    if (url.pathname === '/p1s/evaluate') {
+      let customBookings = null;
+      if (request.method === 'POST') {
+        try {
+          const body = await request.json();
+          if (Array.isArray(body?.bookings)) {
+            customBookings = body.bookings;
+            guardState.p1sBookings = customBookings;
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      const p1sSerial = env.BAMBU_P1S_SERIAL || DEFAULT_CONFIG.p1sSerialNumber || '01P00C611402117';
+      try {
+        const report = await evaluateGuardCycle(env, {
+          serialNumber: p1sSerial,
+          isP1s: true,
+          bookings: customBookings || guardState.p1sBookings || []
+        });
+
+        return new Response(
+          JSON.stringify({
+            success: true,
+            printer: 'Bambu Lab P1S',
+            serialNumber: p1sSerial,
+            enforcement: 'LIVE (dryRun: false - Auto-Cancel & Auto-Pause Armed)',
+            mainX1cProtected: 'DRY RUN (dryRun: true - Protected Lab Simulation)',
+            timestamp: new Date().toISOString(),
+            report
+          }, null, 2),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      } catch (err) {
+        return new Response(
+          JSON.stringify({ success: false, error: err.message || String(err) }, null, 2),
           { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
