@@ -28,21 +28,21 @@ describe("UIUC Domain Guard", () => {
 });
 
 describe("15-Minute Slot & 10-Minute Buffer Math", () => {
-  it("validates 15-minute slot boundaries (:00, :15, :30, :45)", () => {
+  it("validates 5-minute slot boundaries (:00, :05, :10, :15...)", () => {
     expect(isValid15MinSlot(new Date("2026-10-05T10:00:00.000Z"))).toBe(true);
+    expect(isValid15MinSlot(new Date("2026-10-05T10:05:00.000Z"))).toBe(true);
     expect(isValid15MinSlot(new Date("2026-10-05T10:15:00.000Z"))).toBe(true);
     expect(isValid15MinSlot(new Date("2026-10-05T10:30:00.000Z"))).toBe(true);
-    expect(isValid15MinSlot(new Date("2026-10-05T10:45:00.000Z"))).toBe(true);
-    expect(isValid15MinSlot(new Date("2026-10-05T10:10:00.000Z"))).toBe(false);
+    expect(isValid15MinSlot(new Date("2026-10-05T10:07:00.000Z"))).toBe(false);
   });
 
-  it("snaps arbitrary times to 15-minute increments", () => {
+  it("snaps arbitrary times to 5-minute increments", () => {
     const raw = new Date("2026-10-05T10:07:22.000Z");
     expect(snapTo15MinSlot(raw, false).toISOString()).toBe(
-      "2026-10-05T10:00:00.000Z"
+      "2026-10-05T10:05:00.000Z"
     );
     expect(snapTo15MinSlot(raw, true).toISOString()).toBe(
-      "2026-10-05T10:15:00.000Z"
+      "2026-10-05T10:10:00.000Z"
     );
   });
 
