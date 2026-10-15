@@ -166,6 +166,15 @@ export const P1sTestingSandbox: React.FC<P1sTestingSandboxProps> = ({
     return () => unsubscribe();
   }, []);
 
+  // Silently sync sandbox reservations to Cloudflare Worker in background so cloud cron is always aware
+  useEffect(() => {
+    fetch("https://bambu-cloud-guard.anmolp5.workers.dev/p1s/evaluate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bookings: p1sBookings }),
+    }).catch(() => null);
+  }, [p1sBookings]);
+
   // Fetch Telemetry from live Cloudflare Worker
   const fetchTelemetry = useCallback(async () => {
     setIsFetchingTelemetry(true);
