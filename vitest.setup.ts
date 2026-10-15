@@ -24,4 +24,9 @@ const mockStorage = new LocalStorageMock();
   localStorage: mockStorage,
   addEventListener: () => {},
   removeEventListener: () => {},
+  location: {
+    origin: "http://localhost:3000",
+    pathname: "/",
+    href: "http://localhost:3000/",
+  },
 };
