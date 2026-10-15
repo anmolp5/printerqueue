@@ -206,6 +206,14 @@ export function createDefaultAdminSettings(): AdminSettings {
       notes:
         "Always clean the Textured PEI build plate with isopropyl alcohol before starting your print and remove all purge lines when clearing the bed.",
     },
+    bambuGuard: {
+      enabled: true,
+      gracePeriodMinutes: 2,
+      similarityThreshold: 0.65,
+      alertRecipients: [SUPER_ADMIN_EMAIL],
+      resendApiKey: "",
+      dryRun: true,
+    },
     updatedAt: new Date().toISOString(),
   };
 }
@@ -306,6 +314,18 @@ function mergePartialAdminSettings(
       ...defaults.labProfile,
       ...(parsed.labProfile || {}),
     },
+    bambuGuard: {
+      ...defaults.bambuGuard,
+      ...(parsed.bambuGuard || {}),
+      alertRecipients: Array.from(
+        new Set([
+          SUPER_ADMIN_EMAIL,
+          ...((parsed.bambuGuard?.alertRecipients || defaults.bambuGuard.alertRecipients)
+            .map((e) => e.trim().toLowerCase())
+            .filter(Boolean)),
+        ])
+      ),
+    },
     updatedAt: parsed.updatedAt || defaults.updatedAt,
     updatedBy: parsed.updatedBy,
   });
@@ -344,12 +364,17 @@ async function pushAdminSettingsToCloud(settings: AdminSettings): Promise<void> 
 
   // 1. Primary persistent JSON cloud store
   try {
+    const existing = await fetch(CLOUD_SETTINGS_OBJECT_URL, { method: "GET" });
+    const currentData = existing.ok ? (await existing.json())?.data || {} : {};
     await fetch(CLOUD_SETTINGS_OBJECT_URL, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         name: "bambu_x1c_admin_settings_v1",
-        data: settings,
+        data: {
+          ...currentData,
+          ...settings,
+        },
       }),
     });
   } catch {
@@ -362,6 +387,7 @@ async function pushAdminSettingsToCloud(settings: AdminSettings): Promise<void> 
       permissions: settings.permissions,
       bookingLimits: settings.bookingLimits,
       labProfile: settings.labProfile,
+      bambuGuard: settings.bambuGuard,
       updatedAt: settings.updatedAt,
       updatedBy: settings.updatedBy,
     };
@@ -643,6 +669,10 @@ export function importAdminSettingsJson(
       labProfile: {
         ...defaults.labProfile,
         ...(parsed.labProfile || {}),
+      },
+      bambuGuard: {
+        ...defaults.bambuGuard,
+        ...(parsed.bambuGuard || {}),
       },
       updatedAt: new Date().toISOString(),
       updatedBy: actorEmail,

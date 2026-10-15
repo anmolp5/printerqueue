@@ -32,6 +32,7 @@ import { LoginScreen } from "@/components/LoginScreen";
 import { useUserSession } from "@/hooks/useUserSession";
 import {
   fetchBookings,
+  syncBookingsFromCloud,
   subscribeToBookings,
   createBooking,
   startPrintJob,
@@ -93,20 +94,29 @@ export default function HomePage() {
     };
   }, []);
 
-  // Periodic 5-minute late-arrival check + 15-second pre-booking reminder & slot-start check
+  // Periodic 5-minute late-arrival check + 15-second pre-booking reminder & slot-start check + cloud bookings sync
   useEffect(() => {
     checkAndDispatchScheduledReminders();
+    syncBookingsFromCloud();
+
     const reminderInterval = setInterval(() => {
       checkAndDispatchScheduledReminders();
+      syncBookingsFromCloud();
     }, 15 * 1000);
 
     const lateInterval = setInterval(() => {
       runAutoCancelLateCheck();
     }, 5 * 60 * 1000);
 
+    const onFocus = () => {
+      syncBookingsFromCloud();
+    };
+    window.addEventListener("focus", onFocus);
+
     return () => {
       clearInterval(reminderInterval);
       clearInterval(lateInterval);
+      window.removeEventListener("focus", onFocus);
     };
   }, []);
 

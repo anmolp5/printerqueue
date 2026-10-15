@@ -103,10 +103,64 @@ export function getLocalBookings(): CalendarBooking[] {
   }
 }
 
+const CLOUD_SYNC_URL =
+  "https://api.restful-api.dev/objects/ff808181a09d98f701a117663a7a18ed";
+
+async function pushBookingsToCloud(bookings: CalendarBooking[]) {
+  if (typeof window === "undefined") return;
+  try {
+    const existing = await fetch(CLOUD_SYNC_URL, { method: "GET" });
+    if (existing.ok) {
+      const json = await existing.json();
+      const currentData = json?.data || {};
+      await fetch(CLOUD_SYNC_URL, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "bambu_x1c_admin_settings_v1",
+          data: {
+            ...currentData,
+            bookings: bookings,
+            bookingsUpdatedAt: new Date().toISOString(),
+          },
+        }),
+      });
+    }
+  } catch {
+    // ignore
+  }
+}
+
+export async function syncBookingsFromCloud(): Promise<CalendarBooking[]> {
+  if (typeof window === "undefined") return [];
+  try {
+    const res = await fetch(CLOUD_SYNC_URL, {
+      method: "GET",
+      cache: "no-store",
+    });
+    if (res.ok) {
+      const json = await res.json();
+      const cloudList = json?.data?.bookings;
+      if (Array.isArray(cloudList) && cloudList.length > 0) {
+        window.localStorage.setItem(
+          BOOKINGS_STORAGE_KEY,
+          JSON.stringify(cloudList)
+        );
+        bookingListeners.forEach((fn) => fn(cloudList));
+        return cloudList;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return getLocalBookings();
+}
+
 function saveLocalBookings(bookings: CalendarBooking[]) {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(BOOKINGS_STORAGE_KEY, JSON.stringify(bookings));
   bookingListeners.forEach((fn) => fn(bookings));
+  pushBookingsToCloud(bookings);
 }
 
 export function resetDemoData(): CalendarBooking[] {
@@ -151,6 +205,8 @@ export async function fetchBookings(): Promise<CalendarBooking[]> {
       .order("start_time", { ascending: true });
     if (!error && data) return data as CalendarBooking[];
   }
+  // Trigger cloud sync in background
+  syncBookingsFromCloud().catch(() => {});
   return getLocalBookings();
 }
 
@@ -209,19 +265,19 @@ export async function createBooking(params: {
     };
   }
 
-  // 2. Validate 15-minute slot increment (:00, :15, :30, :45)
+  // 2. Validate 5-minute slot increment (:00, :05, :10, :15, ...)
   if (!isValid15MinSlot(start_time)) {
     return {
-      error: "Start time must fall on a 15-minute increment (:00, :15, :30, :45).",
+      error: "Start time must fall on a 5-minute increment (:00, :05, :10, :15, ...).",
       code: "22023",
     };
   }
 
-  // 2b. Disallow starting a booking before the current 15-minute time period
+  // 2b. Disallow starting a booking before the current 5-minute time period
   if (isSlotBeforeCurrentPeriod(start_time)) {
     return {
       error:
-        "Cannot start a booking before the current 15-minute time period.",
+        "Cannot start a booking before the current 5-minute time period.",
       code: "22023",
     };
   }

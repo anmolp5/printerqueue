@@ -28,7 +28,7 @@ const CONTAINER_HEIGHT = ITEM_HEIGHT * VISIBLE_ITEMS; // 190px
 const PADDING_Y = ITEM_HEIGHT * 2; // 76px top & bottom so center item aligns
 
 const HOURS_12 = [12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
-const MINUTES_15 = [0, 15, 30, 45];
+const MINUTES_15 = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55];
 const MERIDIEMS: Array<"AM" | "PM"> = ["AM", "PM"];
 
 const LOOP_CYCLES = 31;

@@ -202,7 +202,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
               Reserve Bambu Lab X1C Slot
             </h2>
             <p className="text-xs text-zinc-400 mt-0.5">
-              15-minute grid intervals • Mandatory {activeBuffer}-minute post-print buffer
+              5-minute grid intervals • Mandatory {activeBuffer}-minute post-print buffer
             </p>
           </div>
           <button
@@ -251,7 +251,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-xs font-semibold uppercase tracking-wider text-zinc-600">
-                Start Date &amp; Time (15-Min Increments)
+                Start Date &amp; Time (5-Min Increments)
               </label>
               <span
                 className={`text-xs font-bold ${

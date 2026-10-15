@@ -104,11 +104,21 @@ export interface AdminLabProfileConfig {
   notes: string;
 }
 
+export interface BambuGuardConfig {
+  enabled: boolean;
+  gracePeriodMinutes: number; // default: 2
+  similarityThreshold: number; // default: 0.65 (65%)
+  alertRecipients: string[]; // default: ['anmolp5@illinois.edu']
+  resendApiKey?: string;
+  dryRun: boolean; // default: true
+}
+
 export interface AdminSettings {
   permissions: AdminPermissionsConfig;
   bookingLimits: AdminBookingLimitsConfig;
   emailTemplates: Record<EmailNotificationType, EmailTemplateConfig>;
   labProfile: AdminLabProfileConfig;
+  bambuGuard: BambuGuardConfig;
   updatedAt: string;
   updatedBy?: string;
 }

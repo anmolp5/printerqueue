@@ -2,7 +2,7 @@ import { CalendarBooking } from "./types";
 import { getAdminSettings } from "./admin-settings";
 
 export const MANDATORY_BUFFER_MINUTES = 10;
-export const SLOT_INCREMENT_MINUTES = 15;
+export const SLOT_INCREMENT_MINUTES = 5;
 
 export const MAX_DURATION_MINUTES = Number(
   process.env.NEXT_PUBLIC_MAX_DURATION_MINUTES || 480
@@ -18,7 +18,7 @@ export function getActiveBufferMinutes(): number {
 }
 
 /**
- * Checks whether a Date falls cleanly on a 15-minute boundary (:00, :15, :30, :45)
+ * Checks whether a Date falls cleanly on a 5-minute boundary (:00, :05, :10, :15, etc.)
  * with 0 seconds and 0 milliseconds.
  */
 export function isValid15MinSlot(date: Date): boolean {
@@ -27,9 +27,10 @@ export function isValid15MinSlot(date: Date): boolean {
   const ms = date.getMilliseconds();
   return minutes % SLOT_INCREMENT_MINUTES === 0 && seconds === 0 && ms === 0;
 }
+export const isValidSlotIncrement = isValid15MinSlot;
 
 /**
- * Snaps any Date down/nearest to a 15-minute slot boundary.
+ * Snaps any Date down/nearest to a 5-minute slot boundary.
  */
 export function snapTo15MinSlot(date: Date, roundUp = false): Date {
   const result = new Date(date);
