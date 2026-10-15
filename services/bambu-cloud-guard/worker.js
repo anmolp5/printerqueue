@@ -22,7 +22,7 @@ const DEFAULT_CONFIG = {
   cloudSettingsUrl: 'https://api.restful-api.dev/objects/ff808181a09d98f701a117663a7a18ed',
 };
 
-// In-memory guard state tracker (persists across warm worker invocations)
+// In-memory guard state tracker (persists across warm worker invocations, 0 KV operations)
 let guardState = {
   unscheduledFirstSeenAt: null,
   stoppedRogueAlertSent: false,
@@ -30,33 +30,17 @@ let guardState = {
   lastEvaluatedAt: null,
 };
 
-// State management helpers (uses distributed Cloudflare KV with in-memory fallback)
+// State management helpers (zero-cost, eliminates all KV write/delete quotas)
 async function getStoredState(env, key, fallback = null) {
-  if (env.GUARD_KV) {
-    try {
-      const val = await env.GUARD_KV.get(key);
-      if (val !== null && val !== undefined) return val;
-    } catch (e) {}
-  }
   return guardState[key] ?? fallback;
 }
 
 async function setStoredState(env, key, val) {
   guardState[key] = val;
-  if (env.GUARD_KV) {
-    try {
-      await env.GUARD_KV.put(key, String(val));
-    } catch (e) {}
-  }
 }
 
 async function deleteStoredState(env, key) {
-  delete guardState[key];
-  if (env.GUARD_KV) {
-    try {
-      await env.GUARD_KV.delete(key);
-    } catch (e) {}
-  }
+  guardState[key] = null;
 }
 
 /**
