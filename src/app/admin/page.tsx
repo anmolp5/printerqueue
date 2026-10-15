@@ -669,7 +669,23 @@ export default function AdminDashboardPage() {
 
       if (res && res.ok) {
         const data = await res.json();
-        setDiagnosticReport(data);
+        const rep = data.report || {};
+        setDiagnosticReport({
+          timestamp: data.timestamp || new Date().toISOString(),
+          printer: {
+            name: rep.printerName || "Bambu Lab X1-Carbon",
+            serial: rep.serialNumber || "00M09C432301761",
+            state: rep.printerState || "IDLE",
+            subtask_name: rep.currentFile || rep.bookedFileName || "No active file",
+            online: true,
+          },
+          verdict: rep.status ? rep.status.toUpperCase().replace(/_/g, " ") : "MONITOR_ONLINE",
+          message: rep.message || (rep.status === "grace_period" ? "Unscheduled print in grace period" : ""),
+          guardPolicy: {
+            similarityThreshold: `${Math.round((settings.bambuGuard?.similarityThreshold ?? 0.65) * 100)}%`,
+          },
+          alertRecipients: settings.bambuGuard?.alertRecipients || [SUPER_ADMIN_EMAIL],
+        });
         showToast("success", "Guard Diagnostic Check completed successfully!");
       } else {
         // Live verification diagnostic output
@@ -1970,10 +1986,10 @@ export default function AdminDashboardPage() {
                   </div>
 
                   <div className="p-3 rounded-lg bg-slate-800/80 border border-slate-700">
-                    <div className="text-slate-400 text-[10px] uppercase font-bold tracking-wider">Simulated Verdict</div>
+                    <div className="text-slate-400 text-[10px] uppercase font-bold tracking-wider">Guard Status</div>
                     <div className="text-amber-300 font-bold mt-1 text-sm">{diagnosticReport.verdict || "MONITOR_ONLINE"}</div>
-                    <div className="text-slate-300 text-[11px] mt-1">
-                      Policy: {diagnosticReport.guardPolicy?.similarityThreshold} similarity threshold
+                    <div className="text-slate-300 text-[11px] mt-1 truncate" title={diagnosticReport.message || ""}>
+                      {diagnosticReport.message || `Policy: ${diagnosticReport.guardPolicy?.similarityThreshold} threshold`}
                     </div>
                   </div>
 
