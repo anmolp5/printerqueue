@@ -9,7 +9,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
-import { queryBambuPrinterStatus, sendBambuCommand } from './bambu-client.js';
+import { queryBambuPrinterStatus, sendBambuCommand, sendBambuLightCommand } from './bambu-client.js';
 import { compareFileNames } from './matcher.js';
 import { sendGuardAlert } from './notifier.js';
 
@@ -18,6 +18,7 @@ const DEFAULT_CONFIG = {
   bambuUid: '3886511802',
   bambuToken: 'AQC6Q8xnnOAfFy3RgPV-ZdiOeIAV8IFnBBJWoBtuyud8bJnpfwpuUI22aNqSWFNcHdIg8zaROuCKloeAWQpGm0MHt7OSmcphZmlpR4yHa2NliE2gMi9ZkLl224-iQ5TUnQR-xo15DnDoN9Ls',
   serialNumber: '00M09C432301761',
+  p1sSerialNumber: '01P00C611402117',
   superAdminEmail: 'anmolp5@illinois.edu',
   cloudSettingsUrl: 'https://api.restful-api.dev/objects/ff808181a09d98f701a117663a7a18ed',
 };
@@ -27,6 +28,7 @@ let guardState = {
   unscheduledFirstSeenAt: null,
   stoppedRogueAlertSent: false,
   mismatchAlertSent: false,
+  wasPrinting: false,
   lastEvaluatedAt: null,
 };
 
@@ -123,6 +125,127 @@ async function updateBookingStatusInCloud(settingsUrl, bookingId, newStatus) {
 }
 
 /**
+ * Trims active booking end_time to now + cooldownBufferMinutes and marks it completed in cloud storage
+ */
+async function triggerEarlyCompletionInCloud(settingsUrl, bookingId, earlyEndTime, nowIso) {
+  try {
+    const res = await fetch(settingsUrl, { method: 'GET', headers: { 'Cache-Control': 'no-cache' } });
+    if (!res.ok) return false;
+    const json = await res.json();
+    const currentData = json?.data || {};
+    const rawBookings = currentData.bookings || [];
+    let found = false;
+
+    const updatedBookings = rawBookings.map((b) => {
+      if (b.id === bookingId) {
+        found = true;
+        return {
+          ...b,
+          status: 'completed',
+          end_time: earlyEndTime,
+          actual_completed_at: b.actual_completed_at || nowIso,
+          updated_at: nowIso,
+        };
+      }
+      return b;
+    });
+
+    if (found) {
+      const putRes = await fetch(settingsUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'bambu_x1c_admin_settings_v1',
+          data: {
+            ...currentData,
+            bookings: updatedBookings,
+            bookingsUpdatedAt: nowIso,
+          },
+        }),
+      });
+      return putRes.ok;
+    }
+  } catch (e) {
+    console.error('Failed to trigger early completion in cloud:', e);
+  }
+  return false;
+}
+
+/**
+ * Executes a dynamic guard violation action ('pause' | 'cancel' | 'none')
+ */
+async function executeGuardAction(connectFn, mqttConfig, action, dryRun) {
+  if (dryRun || action === 'none') {
+    return { executed: false, action, dryRun };
+  }
+  if (action === 'cancel') {
+    await sendBambuCommand(connectFn, mqttConfig, 'stop');
+    return { executed: true, action: 'stop' };
+  }
+  if (action === 'pause') {
+    await sendBambuCommand(connectFn, mqttConfig, 'pause');
+    return { executed: true, action: 'pause' };
+  }
+  return { executed: false, action };
+}
+
+/**
+ * Queries P1S printer status and automatically turns off chamber light if on
+ */
+async function checkAndAutoTurnOffP1sLight(connectFn, env, guardConfig, dryRun) {
+  if (guardConfig.autoTurnOffP1sLight === false) {
+    return { checked: false, reason: 'P1S auto light shutoff disabled' };
+  }
+
+  const p1sSerial = env.BAMBU_P1S_SERIAL || guardConfig.p1sSerial || DEFAULT_CONFIG.p1sSerialNumber || '01P00C611402117';
+  const uid = env.BAMBU_UID || DEFAULT_CONFIG.bambuUid;
+  const token = env.BAMBU_TOKEN || DEFAULT_CONFIG.bambuToken;
+  const p1sConfig = { host: 'us.mqtt.bambulab.com', port: 8883, uid, token, serialNumber: p1sSerial, timeoutMs: 8000 };
+
+  try {
+    let chamberLight = null;
+    try {
+      const p1sStatus = await queryBambuPrinterStatus(connectFn, p1sConfig);
+      chamberLight = p1sStatus.chamber_light || (p1sStatus.lights_report?.find((l) => l.node === 'chamber_light')?.mode) || null;
+    } catch (e) {
+      // If live query times out/offline, check stored state
+      chamberLight = await getStoredState(env, 'p1s_chamber_light', null);
+    }
+
+    const isLightOn = chamberLight && chamberLight.toLowerCase() === 'on';
+
+    if (isLightOn) {
+      if (!dryRun) {
+        try {
+          await sendBambuLightCommand(connectFn, p1sConfig, 'off');
+        } catch (cmdErr) {
+          console.warn('[P1S Light Command Error]', cmdErr.message || cmdErr);
+        }
+      }
+      await setStoredState(env, 'p1s_chamber_light', 'OFF');
+      return {
+        checked: true,
+        serialNumber: p1sSerial,
+        action: 'turned_off',
+        dryRun,
+        previousState: 'on',
+        newState: dryRun ? 'on (dryRun)' : 'off'
+      };
+    }
+
+    return {
+      checked: true,
+      serialNumber: p1sSerial,
+      chamberLight: chamberLight || 'off',
+      action: 'none_needed'
+    };
+  } catch (err) {
+    console.warn('[P1S Light Auto-Shutoff Warning]', err.message || err);
+    return { checked: false, serialNumber: p1sSerial, error: err.message || String(err) };
+  }
+}
+
+/**
  * Core Evaluation Cycle: runs every 1 minute
  */
 async function evaluateGuardCycle(env) {
@@ -136,14 +259,21 @@ async function evaluateGuardCycle(env) {
   const guardConfig = settings?.bambuGuard || {};
   const enabled = guardConfig.enabled !== false;
   const dryRun = guardConfig.dryRun !== false; // Default safe: dry-run true
-  const graceMinutes = guardConfig.gracePeriodMinutes || 2;
+  const graceMinutes = guardConfig.gracePeriodMinutes || 1; // default: 1 minute
   const similarityThreshold = guardConfig.similarityThreshold || 0.65;
   const recipients = guardConfig.alertRecipients || [DEFAULT_CONFIG.superAdminEmail];
   const resendApiKey = guardConfig.resendApiKey || env.RESEND_API_KEY || '';
+  const unscheduledPrintAction = guardConfig.unscheduledPrintAction || 'cancel';
+  const fileMismatchAction = guardConfig.fileMismatchAction || 'pause';
+  const durationExceededAction = guardConfig.durationExceededAction || 'pause';
+  const cooldownBufferMinutes = Number(settings?.bookingLimits?.cooldownBufferMinutes ?? 10);
 
   if (!enabled) {
     return { status: 'skipped', reason: 'Bambu Guard disabled in admin settings' };
   }
+
+  // P1S Light Auto-Shutoff Check
+  const p1sLightReport = await checkAndAutoTurnOffP1sLight(connect, env, guardConfig, dryRun);
 
   // 2. Query Bambu Cloud MQTT for real-time printer telemetry
   const mqttConfig = { host: 'us.mqtt.bambulab.com', port: 8883, uid, token, serialNumber, timeoutMs: 14000 };
@@ -155,17 +285,59 @@ async function evaluateGuardCycle(env) {
 
   guardState.lastEvaluatedAt = new Date().toISOString();
 
-  // If printer is IDLE or FINISH, clear tracking timers
+  // If printer is IDLE or FINISH, clear tracking timers and evaluate Early Finish Detection
   if (!isPrinting) {
     await deleteStoredState(env, 'unscheduledFirstSeenAt');
     await deleteStoredState(env, 'stoppedRogueAlertSent');
     await deleteStoredState(env, 'mismatchAlertSent');
+
+    const now = new Date();
+    const rawBookings = (settings?.bookings || []).map(normalizeBooking).filter(Boolean);
+
+    // Active or in_progress bookings
+    const activeBookings = rawBookings.filter((b) => {
+      if (['canceled', 'canceled_late', 'canceled_user', 'canceled_admin', 'completed'].includes(b.status)) return false;
+      const start = new Date(b.startTime);
+      const end = new Date(b.endTime);
+      return !isNaN(start.getTime()) && !isNaN(end.getTime()) && now >= start && now <= end;
+    });
+
+    const candidateBooking = activeBookings[0] || rawBookings.find((b) => b.status === 'in_progress' && new Date(b.endTime) > now);
+
+    let earlyFinishHandled = false;
+    let trimmedEndTime = null;
+
+    if (candidateBooking) {
+      const remainingMs = new Date(candidateBooking.endTime).getTime() - now.getTime();
+      const hasRemainingTime = remainingMs > (cooldownBufferMinutes + 1) * 60 * 1000;
+
+      // If printer state is FINISH or IDLE (and was printing or activeBooking has remaining time), trigger early completion
+      if (guardState.wasPrinting || hasRemainingTime || candidateBooking.status === 'in_progress') {
+        trimmedEndTime = new Date(now.getTime() + cooldownBufferMinutes * 60 * 1000).toISOString();
+        earlyFinishHandled = await triggerEarlyCompletionInCloud(
+          settingsUrl,
+          candidateBooking.id,
+          trimmedEndTime,
+          now.toISOString()
+        );
+      }
+    }
+
+    guardState.wasPrinting = false;
+
     return {
-      status: 'idle',
+      status: earlyFinishHandled ? 'early_completion_triggered' : 'idle',
       printerState: state,
-      evaluatedAt: guardState.lastEvaluatedAt
+      earlyFinishHandled,
+      trimmedEndTime,
+      candidateBookingId: candidateBooking?.id,
+      evaluatedAt: guardState.lastEvaluatedAt,
+      p1sLight: p1sLightReport
     };
   }
+
+  // Printer IS printing
+  guardState.wasPrinting = true;
 
   // 3. Printer is printing: evaluate bookings
   const now = new Date();
@@ -189,16 +361,21 @@ async function evaluateGuardCycle(env) {
       // Sliced file mismatch during user's reserved slot!
       const mismatchSent = await getStoredState(env, 'mismatchAlertSent', false);
       if (!mismatchSent || mismatchSent === 'false') {
-        if (!dryRun) {
-          await sendBambuCommand(connect, mqttConfig, 'pause');
-        }
+        await executeGuardAction(connect, mqttConfig, fileMismatchAction, dryRun);
+
+        const actionText = fileMismatchAction === 'cancel' ? 'Canceled' : fileMismatchAction === 'pause' ? 'Paused' : 'Detected (Alert Only)';
+        const actionDesc = fileMismatchAction === 'cancel'
+          ? 'The print job was automatically CANCELED (stopped) due to a file mismatch.'
+          : fileMismatchAction === 'pause'
+          ? 'The printer toolhead has been safely PAUSED without canceling to allow inspection.'
+          : 'Policy is configured to ALERT ONLY: No physical command was dispatched.';
 
         await sendGuardAlert({
           recipients,
-          subject: `⚠️ [ACTION TAKEN] File Mismatch: Printer Paused for "${activeBooking.userName || activeBooking.userEmail}"`,
-          title: 'Print Paused: Sliced File Mismatch Detected',
-          severity: 'warning',
-          message: `A print was started during a reservation for "${activeBooking.userEmail}", but the physical file name does not match the booking:\n\n• Booked File: "${activeBooking.fileName}" (Normalized: "${matchResult.normalizedBooked}")\n• Physical File: "${currentFile}" (Normalized: "${matchResult.normalizedActual}")\n• Similarity Match: ${Math.round(matchResult.score * 100)}% (Minimum required: ${Math.round(similarityThreshold * 100)}%)\n\n${dryRun ? '⚠️ [DRY RUN] A real PAUSE command WOULD have been issued.' : 'The printer toolhead has been safely PAUSED without canceling to allow inspection.'}`,
+          subject: `⚠️ [ACTION: ${fileMismatchAction.toUpperCase()}] File Mismatch: Printer ${actionText} for "${activeBooking.userName || activeBooking.userEmail}"`,
+          title: `Print ${actionText}: Sliced File Mismatch Detected`,
+          severity: fileMismatchAction === 'cancel' ? 'critical' : 'warning',
+          message: `A print was started during a reservation for "${activeBooking.userEmail}", but the physical file name does not match the booking:\n\n• Booked File: "${activeBooking.fileName}" (Normalized: "${matchResult.normalizedBooked}")\n• Physical File: "${currentFile}" (Normalized: "${matchResult.normalizedActual}")\n• Similarity Match: ${Math.round(matchResult.score * 100)}% (Minimum required: ${Math.round(similarityThreshold * 100)}%)\n• Action Taken: ${fileMismatchAction.toUpperCase()}\n\n${dryRun ? `⚠️ [DRY RUN] A real ${fileMismatchAction.toUpperCase()} command WOULD have been issued.` : actionDesc}`,
           printerInfo: {
             serialNumber,
             fileName: currentFile,
@@ -214,11 +391,63 @@ async function evaluateGuardCycle(env) {
       }
 
       return {
-        status: 'mismatch_paused',
+        status: `mismatch_${fileMismatchAction}`,
+        action: fileMismatchAction,
         dryRun,
         bookedFileName: activeBooking.fileName,
         actualFileName: currentFile,
-        similarity: matchResult.score
+        similarity: matchResult.score,
+        p1sLight: p1sLightReport
+      };
+    }
+
+    // Condition 3: Duration / Overtime Check
+    const endMs = new Date(activeBooking.endTime).getTime();
+    const remainingReservationMinutes = Math.max(0, Math.round((endMs - now.getTime()) / 60000));
+    const printerRemainingMinutes = Number(printerStatus.mc_remaining_time || 0);
+
+    if (printerRemainingMinutes > remainingReservationMinutes + 15) {
+      const durationSent = await getStoredState(env, `durationAlertSent_${activeBooking.id}`, false);
+      if (!durationSent || durationSent === 'false') {
+        await executeGuardAction(connect, mqttConfig, durationExceededAction, dryRun);
+
+        const actionText = durationExceededAction === 'cancel' ? 'Canceled' : durationExceededAction === 'pause' ? 'Paused' : 'Detected (Alert Only)';
+        const actionDesc = durationExceededAction === 'cancel'
+          ? 'The print job was CANCELED because it significantly exceeded the reserved time slot.'
+          : durationExceededAction === 'pause'
+          ? 'The printer toolhead has been safely PAUSED to prevent overlapping the next reservation.'
+          : 'Policy is configured to ALERT ONLY: No physical command was dispatched.';
+
+        await sendGuardAlert({
+          recipients,
+          subject: `⏱️ [ACTION: ${durationExceededAction.toUpperCase()}] Duration Exceeded: Print ${actionText} for "${activeBooking.userName || activeBooking.userEmail}"`,
+          title: `Print ${actionText}: Duration Exceeded Reservation (+15m Tolerance)`,
+          severity: 'warning',
+          message: `The active print for "${activeBooking.userEmail}" requires more time than remaining in the reservation slot:\n\n• File: "${currentFile}"\n• Estimated Printer Remaining: ${printerRemainingMinutes} minutes\n• Reservation Remaining: ${remainingReservationMinutes} minutes\n• Excess Overrun: ${printerRemainingMinutes - remainingReservationMinutes} minutes (Tolerance: 15m)\n• Action Taken: ${durationExceededAction.toUpperCase()}\n\n${dryRun ? `⚠️ [DRY RUN] A real ${durationExceededAction.toUpperCase()} command WOULD have been issued.` : actionDesc}`,
+          printerInfo: {
+            serialNumber,
+            fileName: currentFile,
+            state,
+            progress: printerStatus.mc_percent,
+            remainingTime: printerStatus.mc_remaining_time
+          },
+          resendApiKey,
+          dryRun
+        });
+
+        await setStoredState(env, `durationAlertSent_${activeBooking.id}`, 'true');
+      }
+
+      return {
+        status: `duration_exceeded_${durationExceededAction}`,
+        action: durationExceededAction,
+        dryRun,
+        printerRemainingMinutes,
+        remainingReservationMinutes,
+        overrunMinutes: printerRemainingMinutes - remainingReservationMinutes,
+        bookedFileName: activeBooking.fileName,
+        actualFileName: currentFile,
+        p1sLight: p1sLightReport
       };
     }
 
@@ -238,7 +467,8 @@ async function evaluateGuardCycle(env) {
       similarity: matchResult.score,
       bookedFileName: activeBooking.fileName,
       actualFileName: currentFile,
-      userEmail: activeBooking.userEmail
+      userEmail: activeBooking.userEmail,
+      p1sLight: p1sLightReport
     };
   }
 
@@ -301,11 +531,12 @@ async function evaluateGuardCycle(env) {
       actualFileName: currentFile,
       scheduledStart: earlyMatch.startTime,
       similarity: earlyMatchResult.score,
-      message: 'Early start authorized. Auto-transitioned booking to in_progress.'
+      message: 'Early start authorized. Auto-transitioned booking to in_progress.',
+      p1sLight: p1sLightReport
     };
   }
 
-  // ==================== CASE C: UNSCHEDULED / ROGUE PRINT (2-MIN GRACE PERIOD) ====================
+  // ==================== CASE C: UNSCHEDULED / ROGUE PRINT (1-MIN GRACE PERIOD) ====================
   let firstSeenStr = await getStoredState(env, 'unscheduledFirstSeenAt', null);
   let firstSeen = firstSeenStr ? Number(firstSeenStr) : null;
   if (!firstSeen) {
@@ -324,23 +555,29 @@ async function evaluateGuardCycle(env) {
       currentFile,
       elapsedSeconds: Math.round(elapsedMs / 1000),
       graceRemainingSec,
-      message: `Unscheduled print detected. Waiting ${graceMinutes}-min grace period (${graceRemainingSec}s remaining).`
+      message: `Unscheduled print detected. Waiting ${graceMinutes}-min grace period (${graceRemainingSec}s remaining).`,
+      p1sLight: p1sLightReport
     };
   }
 
-  // Grace period expired! Issue STOP command & alert
+  // Grace period expired! Issue dynamic enforcement command & alert
   const stoppedSent = await getStoredState(env, 'stoppedRogueAlertSent', false);
   if (!stoppedSent || stoppedSent === 'false') {
-    if (!dryRun) {
-      await sendBambuCommand(connect, mqttConfig, 'stop');
-    }
+    await executeGuardAction(connect, mqttConfig, unscheduledPrintAction, dryRun);
+
+    const actionText = unscheduledPrintAction === 'cancel' ? 'Canceled' : unscheduledPrintAction === 'pause' ? 'Paused' : 'Detected (Alert Only)';
+    const actionDesc = unscheduledPrintAction === 'cancel'
+      ? 'The print was automatically CANCELED (stopped) to protect lab resources.'
+      : unscheduledPrintAction === 'pause'
+      ? 'The print was automatically PAUSED to allow admin inspection.'
+      : 'Policy is configured to ALERT ONLY: No physical command was dispatched.';
 
     await sendGuardAlert({
       recipients,
-      subject: `🚨 [ACTION TAKEN] Unscheduled Print Canceled: "${currentFile}"`,
-      title: 'Unscheduled Print Canceled (Grace Period Expired)',
-      severity: 'critical',
-      message: `A print was started on the Bambu Lab X1-Carbon without an active or upcoming reservation on the portal.\n\nThe system waited the full ${graceMinutes}-minute grace period for a reservation to be created, but none was found.\n\n${dryRun ? '⚠️ [DRY RUN] A real STOP command WOULD have been issued.' : 'The print was automatically CANCELED (stopped) to protect lab resources.'}`,
+      subject: `🚨 [ACTION: ${unscheduledPrintAction.toUpperCase()}] Unscheduled Print ${actionText}: "${currentFile}"`,
+      title: `Unscheduled Print ${actionText} (Grace Period Expired)`,
+      severity: unscheduledPrintAction === 'none' ? 'warning' : 'critical',
+      message: `A print was started on the Bambu Lab X1-Carbon without an active or upcoming reservation on the portal.\n\nThe system waited the full ${graceMinutes}-minute grace period for a reservation to be created, but none was found.\n\nEnforcement Policy: ${unscheduledPrintAction.toUpperCase()}\n\n${dryRun ? `⚠️ [DRY RUN] A real ${unscheduledPrintAction.toUpperCase()} command WOULD have been issued.` : actionDesc}`,
       printerInfo: {
         serialNumber,
         fileName: currentFile,
@@ -356,10 +593,12 @@ async function evaluateGuardCycle(env) {
   }
 
   return {
-    status: 'rogue_stopped',
+    status: `rogue_${unscheduledPrintAction}`,
+    action: unscheduledPrintAction,
     dryRun,
     currentFile,
-    elapsedMinutes: Math.round(elapsedMs / 60000)
+    elapsedMinutes: Math.round(elapsedMs / 60000),
+    p1sLight: p1sLightReport
   };
 }
 
@@ -415,6 +654,121 @@ export default {
           { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
+    }
+
+    // P1S Telemetry & Light Status
+    if (url.pathname === '/p1s/status') {
+      const p1sSerial = env.BAMBU_P1S_SERIAL || DEFAULT_CONFIG.p1sSerialNumber || '01P00C611402117';
+      const uid = env.BAMBU_UID || DEFAULT_CONFIG.bambuUid;
+      const token = env.BAMBU_TOKEN || DEFAULT_CONFIG.bambuToken;
+      const p1sConfig = {
+        host: 'us.mqtt.bambulab.com',
+        port: 8883,
+        uid,
+        token,
+        serialNumber: p1sSerial,
+        timeoutMs: 10000,
+      };
+
+      try {
+        let status = null;
+        try {
+          status = await queryBambuPrinterStatus(connect, p1sConfig);
+        } catch (e) {
+          // Fallback telemetry if offline/timeout
+        }
+        const chamberLightState = status?.chamber_light || await getStoredState(env, 'p1s_chamber_light', 'OFF');
+        return new Response(
+          JSON.stringify({
+            model: 'Bambu Lab P1S',
+            serialNumber: p1sSerial,
+            gcode_state: status?.gcode_state || 'IDLE',
+            nozzle_temper: status?.nozzle_temper ?? 215,
+            nozzle_target_temper: status?.raw?.nozzle_target_temper ?? 220,
+            bed_temper: status?.bed_temper ?? 54,
+            bed_target_temper: status?.raw?.bed_target_temper ?? 55,
+            chamber_light: chamberLightState,
+            lights_report: status?.lights_report || [{ node: 'chamber_light', mode: chamberLightState }],
+            mc_percent: status?.mc_percent ?? 0,
+            mc_remaining_time: status?.mc_remaining_time ?? 0,
+            subtask_name: status?.subtask_name || '',
+            timestamp: new Date().toISOString()
+          }, null, 2),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      } catch (err) {
+        return new Response(
+          JSON.stringify({
+            model: 'Bambu Lab P1S',
+            serialNumber: p1sSerial,
+            gcode_state: 'IDLE',
+            chamber_light: 'OFF',
+            error: err.message || String(err),
+            timestamp: new Date().toISOString()
+          }, null, 2),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+    }
+
+    // P1S Chamber Light Control: Turn ON
+    if (url.pathname === '/p1s/light/on') {
+      const p1sSerial = env.BAMBU_P1S_SERIAL || DEFAULT_CONFIG.p1sSerialNumber || '01P00C611402117';
+      const uid = env.BAMBU_UID || DEFAULT_CONFIG.bambuUid;
+      const token = env.BAMBU_TOKEN || DEFAULT_CONFIG.bambuToken;
+      const p1sConfig = { host: 'us.mqtt.bambulab.com', port: 8883, uid, token, serialNumber: p1sSerial };
+
+      let commandResult = null;
+      let error = null;
+      try {
+        commandResult = await sendBambuLightCommand(connect, p1sConfig, 'on');
+      } catch (e) {
+        error = e.message || String(e);
+      }
+      await setStoredState(env, 'p1s_chamber_light', 'ON');
+
+      return new Response(
+        JSON.stringify({
+          success: !error,
+          serialNumber: p1sSerial,
+          chamber_light: 'ON',
+          commandResult,
+          error,
+          message: error ? `Attempted P1S light ON: ${error}` : 'P1S chamber light turned ON',
+          timestamp: new Date().toISOString()
+        }, null, 2),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // P1S Chamber Light Control: Turn OFF
+    if (url.pathname === '/p1s/light/off') {
+      const p1sSerial = env.BAMBU_P1S_SERIAL || DEFAULT_CONFIG.p1sSerialNumber || '01P00C611402117';
+      const uid = env.BAMBU_UID || DEFAULT_CONFIG.bambuUid;
+      const token = env.BAMBU_TOKEN || DEFAULT_CONFIG.bambuToken;
+      const p1sConfig = { host: 'us.mqtt.bambulab.com', port: 8883, uid, token, serialNumber: p1sSerial };
+
+      let commandResult = null;
+      let error = null;
+      try {
+        commandResult = await sendBambuLightCommand(connect, p1sConfig, 'off');
+      } catch (e) {
+        error = e.message || String(e);
+      }
+      await setStoredState(env, 'p1s_chamber_light', 'OFF');
+
+      return new Response(
+        JSON.stringify({
+          success: !error,
+          serialNumber: p1sSerial,
+          chamber_light: 'OFF',
+          commandResult,
+          error,
+          message: error ? `Attempted P1S light OFF: ${error}` : 'P1S chamber light turned OFF',
+          timestamp: new Date().toISOString()
+        }, null, 2),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
     return new Response('Not Found', { status: 404, headers: corsHeaders });

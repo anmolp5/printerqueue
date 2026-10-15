@@ -63,7 +63,7 @@ function createSubscribePacket(packetId, topic, qos = 0) {
   return new Uint8Array([0x82, ...remBytes, ...varHeader, ...payload]);
 }
 
-function createPublishPacket(topic, payloadStr) {
+export function createPublishPacket(topic, payloadStr) {
   const topicEnc = encodeString(topic);
   const payloadEnc = new TextEncoder().encode(payloadStr);
   const remBytes = encodeVariableLength(topicEnc.length + payloadEnc.length);
@@ -166,6 +166,8 @@ export async function queryBambuPrinterStatus(connectFn, config) {
           const parsed = extractPrintStatusFromStream(accumulatedText);
           if (parsed && parsed.print) {
             clearTimeout(timeoutHandle);
+            const lights = parsed.print.lights_report || [];
+            const chamberLightObj = lights.find((l) => l.node === 'chamber_light');
             return {
               gcode_state: parsed.print.gcode_state || 'IDLE',
               subtask_name: parsed.print.subtask_name || '',
@@ -174,6 +176,8 @@ export async function queryBambuPrinterStatus(connectFn, config) {
               mc_remaining_time: parsed.print.mc_remaining_time ?? 0,
               nozzle_temper: parsed.print.nozzle_temper ?? 0,
               bed_temper: parsed.print.bed_temper ?? 0,
+              lights_report: lights,
+              chamber_light: chamberLightObj ? chamberLightObj.mode : 'off',
               raw: parsed.print
             };
           }
@@ -239,3 +243,59 @@ export async function sendBambuCommand(connectFn, config, command) {
     try { await socket.close(); } catch(e){}
   }
 }
+
+/**
+ * Sends a chamber light command to the Bambu printer ("on" or "off")
+ */
+export async function sendBambuLightCommand(connectFn, config, mode = 'off') {
+  const {
+    host = 'us.mqtt.bambulab.com',
+    port = 8883,
+    uid = '3886511802',
+    token,
+    serialNumber = '01P00C611402117'
+  } = config;
+
+  const username = `u_${uid}`;
+  const clientId = `bambu_light_${Math.random().toString(16).slice(2, 8)}`;
+
+  const socket = connectFn({ hostname: host, port }, { secureTransport: 'on' });
+  const writer = socket.writable.getWriter();
+  const reader = socket.readable.getReader();
+
+  try {
+    // 1. Send CONNECT
+    const connPacket = createConnectPacket(clientId, username, token);
+    await writer.write(connPacket);
+
+    // 2. Read CONNACK
+    const { value: connack, done: connDone } = await reader.read();
+    if (connDone || !connack || connack.length < 4 || connack[0] !== 0x20 || connack[3] !== 0x00) {
+      throw new Error('MQTT Connection refused');
+    }
+
+    // 3. Publish light command
+    const reqTopic = `device/${serialNumber}/request`;
+    const payload = JSON.stringify({
+      system: {
+        sequence_id: '0',
+        command: 'ledctrl',
+        led_node: 'chamber_light',
+        led_mode: mode,
+        led_on_time: 500,
+        led_off_time: 500,
+        loop_times: 0,
+        interval_time: 0
+      }
+    });
+    const pubPacket = createPublishPacket(reqTopic, payload);
+    await writer.write(pubPacket);
+
+    return { success: true, mode, serialNumber };
+  } finally {
+    try { await writer.close(); } catch(e){}
+    try { await reader.cancel(); } catch(e){}
+    try { await socket.close(); } catch(e){}
+  }
+}
+

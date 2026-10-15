@@ -208,11 +208,16 @@ export function createDefaultAdminSettings(): AdminSettings {
     },
     bambuGuard: {
       enabled: true,
-      gracePeriodMinutes: 2,
+      gracePeriodMinutes: 1,
       similarityThreshold: 0.65,
       alertRecipients: [SUPER_ADMIN_EMAIL],
       resendApiKey: "",
       dryRun: true,
+      unscheduledPrintAction: "cancel",
+      fileMismatchAction: "pause",
+      durationExceededAction: "pause",
+      p1sSerial: "01P00C611402117",
+      autoTurnOffP1sLight: true,
     },
     updatedAt: new Date().toISOString(),
   };

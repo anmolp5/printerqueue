@@ -857,6 +857,85 @@ export async function cancelUserBooking(
 }
 
 /**
+ * Allows a user (or admin) to edit an existing scheduled reservation.
+ */
+export async function editBooking(params: {
+  bookingId: string;
+  user: UserProfile;
+  file_name: string;
+  start_time: Date;
+  duration_minutes: number;
+}): Promise<{ data?: CalendarBooking; error?: string }> {
+  const { bookingId, user, file_name, start_time, duration_minutes } = params;
+
+  const all = getLocalBookings();
+  const target = all.find((b) => b.id === bookingId);
+  if (!target) {
+    return { error: "Booking not found." };
+  }
+
+  // Check ownership: only the user who made the booking (isBookingOwnedByUser(target, user)) can edit (admins can also edit).
+  if (!isBookingOwnedByUser(target, user) && user.role !== "admin") {
+    return { error: "Unauthorized: You can only edit your own reservation." };
+  }
+
+  // Check status: once a booking has started (status === 'in_progress' or status !== 'scheduled'), strictly return error
+  if (target.status !== "scheduled") {
+    return { error: "This reservation has already started and cannot be edited." };
+  }
+
+  // Validate file_name (not empty) and duration_minutes (1 to 720)
+  const trimmedFileName = file_name?.trim();
+  if (!trimmedFileName) {
+    return { error: "File name cannot be empty." };
+  }
+
+  if (
+    !Number.isFinite(duration_minutes) ||
+    duration_minutes < 1 ||
+    duration_minutes > 720
+  ) {
+    return { error: "Duration must be between 1 and 720 minutes." };
+  }
+
+  const snappedStart = snapTo15MinSlot(start_time);
+  const activeBuffer =
+    getAdminSettings().bookingLimits.cooldownBufferMinutes ??
+    MANDATORY_BUFFER_MINUTES;
+  const newEndTime = calculateEndTime(
+    snappedStart,
+    duration_minutes,
+    activeBuffer
+  );
+
+  // Collision check: call findOverlappingBooking passing bookingId as excludeBookingId
+  const overlap = findOverlappingBooking(
+    snappedStart,
+    newEndTime,
+    all,
+    bookingId
+  );
+  if (overlap) {
+    return {
+      error: `Conflicts with existing booking "${overlap.file_name}" (${overlap.user_email}).`,
+    };
+  }
+
+  const updatedBooking: CalendarBooking = {
+    ...target,
+    file_name: trimmedFileName,
+    start_time: snappedStart.toISOString(),
+    end_time: newEndTime.toISOString(),
+    duration_minutes,
+    buffer_minutes: activeBuffer,
+    updated_at: new Date().toISOString(),
+  };
+
+  saveLocalBookings(all.map((b) => (b.id === bookingId ? updatedBooking : b)));
+  return { data: updatedBooking };
+}
+
+/**
  * Section 6: Admin Management & Manual Overrides
  */
 export async function adminOverrideBooking(params: {

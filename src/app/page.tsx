@@ -38,6 +38,7 @@ import {
   startPrintJob,
   completeAndClearBed,
   cancelUserBooking,
+  editBooking,
   adminOverrideBooking,
   runAutoCancelLateCheck,
   triggerBookingReminderEmail,
@@ -194,6 +195,16 @@ export default function HomePage() {
       reason: params.reason,
     });
     return { error: res.error };
+  };
+
+  const handleEditBooking = async (params: {
+    bookingId: string;
+    user: UserProfile;
+    file_name: string;
+    start_time: Date;
+    duration_minutes: number;
+  }) => {
+    return await editBooking(params);
   };
 
   const activeJobNow = bookings.find((b) => b.status === "in_progress");
@@ -711,6 +722,7 @@ export default function HomePage() {
         booking={adminSelectedBooking}
         user={user}
         onClose={() => setAdminSelectedBooking(null)}
+        onEditBooking={handleEditBooking}
         onAdminOverride={handleAdminOverride}
         onUserCancel={handleCancelBooking}
       />

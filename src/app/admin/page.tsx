@@ -65,12 +65,14 @@ import {
   subscribeToEmails,
 } from "@/lib/email";
 import { AdminBookingModal } from "@/components/AdminBookingModal";
+import { P1sTestingSandbox } from "@/components/P1sTestingSandbox";
 import {
   AdminSettings,
   BookingStatus,
   CalendarBooking,
   DispatchedEmail,
   EmailNotificationType,
+  GuardViolationAction,
 } from "@/lib/types";
 
 type AdminTabId =
@@ -78,6 +80,7 @@ type AdminTabId =
   | "limits"
   | "emails"
   | "guard"
+  | "p1s-sandbox"
   | "queue"
   | "profile"
   | "system";
@@ -612,11 +615,14 @@ export default function AdminDashboardPage() {
   const handleUpdateGuardResendKey = (apiKey: string) => {
     const currentGuard = settings.bambuGuard || {
       enabled: true,
-      gracePeriodMinutes: 2,
+      gracePeriodMinutes: 1,
       similarityThreshold: 0.65,
       alertRecipients: [SUPER_ADMIN_EMAIL],
       resendApiKey: "",
       dryRun: true,
+      unscheduledPrintAction: "cancel",
+      fileMismatchAction: "pause",
+      durationExceededAction: "pause",
     };
     const next: AdminSettings = {
       ...settings,
@@ -626,6 +632,31 @@ export default function AdminDashboardPage() {
       },
     };
     commitSettings(next, "Updated Resend API Key for Cloud Guard alerts.");
+  };
+
+  const handleUpdateGuardViolationAction = (
+    key: "unscheduledPrintAction" | "fileMismatchAction" | "durationExceededAction",
+    action: GuardViolationAction
+  ) => {
+    const currentGuard = settings.bambuGuard || {
+      enabled: true,
+      gracePeriodMinutes: 1,
+      similarityThreshold: 0.65,
+      alertRecipients: [SUPER_ADMIN_EMAIL],
+      resendApiKey: "",
+      dryRun: true,
+      unscheduledPrintAction: "cancel",
+      fileMismatchAction: "pause",
+      durationExceededAction: "pause",
+    };
+    const next: AdminSettings = {
+      ...settings,
+      bambuGuard: {
+        ...currentGuard,
+        [key]: action,
+      },
+    };
+    commitSettings(next, `Updated Bambu Guard policy: ${key} -> ${action}`);
   };
 
   const handleRunDiagnostic = async () => {
@@ -897,6 +928,11 @@ export default function AdminDashboardPage() {
               id: "guard" as AdminTabId,
               label: "Bambu Guard",
               icon: ShieldAlert,
+            },
+            {
+              id: "p1s-sandbox" as AdminTabId,
+              label: "P1S Real-Hardware Sandbox",
+              icon: Printer,
             },
             {
               id: "queue" as AdminTabId,
@@ -2112,20 +2148,137 @@ export default function AdminDashboardPage() {
                     </button>
                   </div>
 
-                  {/* Policy 3: Unscheduled Print Grace Period */}
+                  {/* Grace Period: 1 Minute */}
                   <div className="p-3 rounded-lg bg-zinc-50 border border-zinc-200">
                     <div className="flex items-center justify-between text-xs font-bold text-zinc-800">
-                      <span>Condition 1: Unscheduled Print Grace Period</span>
-                      <span className="px-2 py-0.5 rounded bg-zinc-200 text-zinc-800 font-mono">
-                        {settings.bambuGuard?.gracePeriodMinutes || 2} Minutes
+                      <span>Unscheduled Print Grace Period</span>
+                      <span className="px-2.5 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-300 font-mono text-xs font-bold">
+                        1 Minute
                       </span>
                     </div>
                     <p className="text-[11px] text-zinc-500 mt-1">
-                      If physical printing begins without a reservation, the system waits 2 minutes for a booking to be created before issuing a Stop (Cancel) command.
+                      If physical printing begins without a reservation, the system waits 1 minute for a booking to be created before issuing enforcement commands.
                     </p>
                   </div>
 
-                  {/* Policy 4: File Match Threshold */}
+                  {/* Enforcement Action 1: Unscheduled Print Action */}
+                  <div className="p-3.5 rounded-lg bg-zinc-50 border border-zinc-200 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs font-bold text-zinc-800">
+                        Unscheduled Print Action
+                      </div>
+                      <span className="text-[10px] uppercase font-bold text-zinc-400">
+                        Rogue Job Policy
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-zinc-500">
+                      Action taken when a print job begins with no reservation found after the 1-minute grace period.
+                    </p>
+                    <div className="grid grid-cols-3 gap-1.5 bg-zinc-200/70 p-1 rounded-lg">
+                      {[
+                        { label: "Auto-Cancel (Default)", value: "cancel" as GuardViolationAction },
+                        { label: "Auto-Pause", value: "pause" as GuardViolationAction },
+                        { label: "Alert Only", value: "none" as GuardViolationAction },
+                      ].map((opt) => {
+                        const currentVal = settings.bambuGuard?.unscheduledPrintAction || "cancel";
+                        const isSelected = currentVal === opt.value;
+                        return (
+                          <button
+                            key={opt.value}
+                            type="button"
+                            onClick={() => handleUpdateGuardViolationAction("unscheduledPrintAction", opt.value)}
+                            className={`py-1.5 px-2 rounded-md text-[11px] font-bold text-center transition-all cursor-pointer truncate ${
+                              isSelected
+                                ? "bg-[#13294B] text-white shadow-xs"
+                                : "text-zinc-700 hover:text-zinc-900 hover:bg-zinc-100"
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Enforcement Action 2: File Mismatch Action */}
+                  <div className="p-3.5 rounded-lg bg-zinc-50 border border-zinc-200 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs font-bold text-zinc-800">
+                        File Mismatch Action
+                      </div>
+                      <span className="text-[10px] uppercase font-bold text-zinc-400">
+                        Similarity &lt; {Math.round((settings.bambuGuard?.similarityThreshold || 0.65) * 100)}%
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-zinc-500">
+                      Action taken when the physical print filename differs from the reserved booking filename.
+                    </p>
+                    <div className="grid grid-cols-3 gap-1.5 bg-zinc-200/70 p-1 rounded-lg">
+                      {[
+                        { label: "Auto-Pause (Default)", value: "pause" as GuardViolationAction },
+                        { label: "Auto-Cancel", value: "cancel" as GuardViolationAction },
+                        { label: "Alert Only", value: "none" as GuardViolationAction },
+                      ].map((opt) => {
+                        const currentVal = settings.bambuGuard?.fileMismatchAction || "pause";
+                        const isSelected = currentVal === opt.value;
+                        return (
+                          <button
+                            key={opt.value}
+                            type="button"
+                            onClick={() => handleUpdateGuardViolationAction("fileMismatchAction", opt.value)}
+                            className={`py-1.5 px-2 rounded-md text-[11px] font-bold text-center transition-all cursor-pointer truncate ${
+                              isSelected
+                                ? "bg-[#13294B] text-white shadow-xs"
+                                : "text-zinc-700 hover:text-zinc-900 hover:bg-zinc-100"
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Enforcement Action 3: Duration Exceeded Action */}
+                  <div className="p-3.5 rounded-lg bg-zinc-50 border border-zinc-200 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs font-bold text-zinc-800">
+                        Duration Exceeded Action
+                      </div>
+                      <span className="text-[10px] uppercase font-bold text-zinc-400">
+                        Slot Overrun Policy
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-zinc-500">
+                      Action taken when an active print job exceeds its scheduled duration into buffer or the next slot.
+                    </p>
+                    <div className="grid grid-cols-3 gap-1.5 bg-zinc-200/70 p-1 rounded-lg">
+                      {[
+                        { label: "Auto-Pause (Default)", value: "pause" as GuardViolationAction },
+                        { label: "Auto-Cancel", value: "cancel" as GuardViolationAction },
+                        { label: "Alert Only", value: "none" as GuardViolationAction },
+                      ].map((opt) => {
+                        const currentVal = settings.bambuGuard?.durationExceededAction || "pause";
+                        const isSelected = currentVal === opt.value;
+                        return (
+                          <button
+                            key={opt.value}
+                            type="button"
+                            onClick={() => handleUpdateGuardViolationAction("durationExceededAction", opt.value)}
+                            className={`py-1.5 px-2 rounded-md text-[11px] font-bold text-center transition-all cursor-pointer truncate ${
+                              isSelected
+                                ? "bg-[#13294B] text-white shadow-xs"
+                                : "text-zinc-700 hover:text-zinc-900 hover:bg-zinc-100"
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Policy 5: File Match Threshold */}
                   <div className="p-3 rounded-lg bg-zinc-50 border border-zinc-200">
                     <div className="flex items-center justify-between text-xs font-bold text-zinc-800">
                       <span>Condition 2: File Normalization & Similarity</span>
@@ -2134,13 +2287,18 @@ export default function AdminDashboardPage() {
                       </span>
                     </div>
                     <p className="text-[11px] text-zinc-500 mt-1">
-                      Strips slicer tags (<code className="text-[10px] bg-zinc-200 px-1 rounded">_0.4nozzle</code>, <code className="text-[10px] bg-zinc-200 px-1 rounded">_PLA</code>, <code className="text-[10px] bg-zinc-200 px-1 rounded">Plate 1</code>, <code className="text-[10px] bg-zinc-200 px-1 rounded">.gcode</code>). If similarity is &lt; 65%, issues a Safe Pause command.
+                      Strips slicer tags (<code className="text-[10px] bg-zinc-200 px-1 rounded">_0.4nozzle</code>, <code className="text-[10px] bg-zinc-200 px-1 rounded">_PLA</code>, <code className="text-[10px] bg-zinc-200 px-1 rounded">Plate 1</code>, <code className="text-[10px] bg-zinc-200 px-1 rounded">.gcode</code>). If similarity is &lt; 65%, triggers the configured File Mismatch Action.
                     </p>
                   </div>
                 </div>
               </div>
             </div>
           </div>
+        )}
+
+        {/* ==================== TAB: P1S REAL-HARDWARE SANDBOX ==================== */}
+        {activeTab === "p1s-sandbox" && (
+          <P1sTestingSandbox user={user} isAdmin={isAdmin} />
         )}
 
         {/* ==================== TAB 4: QUEUE & RESERVATIONS MANAGER ==================== */}
