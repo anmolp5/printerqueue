@@ -230,7 +230,7 @@ let cachedSettings: AdminSettings | null = null;
 
 // Shared Cloud Sync Endpoints (CORS-enabled for static GitHub Pages & localhost)
 const CLOUD_SETTINGS_OBJECT_URL =
-  "https://api.restful-api.dev/objects/ff808181a09d98f701a117663a7a18ed";
+  "https://bambu-cloud-guard.anmolp5.workers.dev/api/settings";
 const CLOUD_SETTINGS_NTFY_TOPIC = "https://ntfy.sh/uiuc_bambu_x1c_settings_v2";
 
 const LEGACY_DEMO_EMAILS = new Set([
@@ -367,20 +367,12 @@ export function getAdminSettings(): AdminSettings {
 async function pushAdminSettingsToCloud(settings: AdminSettings): Promise<void> {
   if (!isBrowserRuntime()) return;
 
-  // 1. Primary persistent JSON cloud store
+  // 1. Primary Cloudflare Worker endpoint
   try {
-    const existing = await fetch(CLOUD_SETTINGS_OBJECT_URL, { method: "GET" });
-    const currentData = existing.ok ? (await existing.json())?.data || {} : {};
     await fetch(CLOUD_SETTINGS_OBJECT_URL, {
-      method: "PUT",
+      method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: "bambu_x1c_admin_settings_v1",
-        data: {
-          ...currentData,
-          ...settings,
-        },
-      }),
+      body: JSON.stringify({ data: settings }),
     });
   } catch {
     // ignore network error

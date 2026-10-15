@@ -23,6 +23,9 @@ const DEFAULT_CONFIG = {
   cloudSettingsUrl: 'https://api.restful-api.dev/objects/ff808181a09d98f701a117663a7a18ed',
 };
 
+// Shared cloud sync topic (unlimited, zero-rate-limit persistent cache)
+const SYNC_BACKUP_TOPIC = 'https://ntfy.sh/uiuc_bambu_x1c_sync_v4';
+
 // In-memory guard state tracker (persists across warm worker invocations, 0 KV operations)
 let guardState = {
   unscheduledFirstSeenAt: null,
@@ -30,6 +33,11 @@ let guardState = {
   mismatchAlertSent: false,
   wasPrinting: false,
   lastEvaluatedAt: null,
+  p1sBookings: [],
+  x1cBookings: [],
+  adminSettings: null,
+  lastBookingsUpdated: null,
+  lastSettingsUpdated: null,
 };
 
 // State management helpers (zero-cost, eliminates all KV write/delete quotas)
@@ -46,14 +54,113 @@ async function deleteStoredState(env, key) {
 }
 
 /**
+ * Restores bookings and settings from persistent Cloudflare KV backup if worker memory was cleared
+ */
+async function loadBackupData(env, force = false) {
+  if ((guardState.x1cBookings.length === 0 || force) && env?.GUARD_KV) {
+    try {
+      const raw = await env.GUARD_KV.get('x1c_bookings');
+      if (raw) {
+        const stored = JSON.parse(raw);
+        if (Array.isArray(stored)) {
+          guardState.x1cBookings = stored;
+          guardState.lastBookingsUpdated = new Date().toISOString();
+        }
+      }
+    } catch (e) {
+      console.warn('[KV Load Bookings Error]', e.message);
+    }
+  }
+  if ((!guardState.adminSettings || force) && env?.GUARD_KV) {
+    try {
+      const rawSettings = await env.GUARD_KV.get('admin_settings');
+      if (rawSettings) {
+        guardState.adminSettings = JSON.parse(rawSettings);
+        guardState.lastSettingsUpdated = new Date().toISOString();
+      }
+    } catch (e) {
+      console.warn('[KV Load Settings Error]', e.message);
+    }
+  }
+
+  // Fallback to ntfy persistent backup with &since=all
+  if (guardState.x1cBookings.length === 0 || !guardState.adminSettings) {
+    try {
+      const res = await fetch(`${SYNC_BACKUP_TOPIC}/json?poll=1&since=all`, { cache: 'no-store' });
+      if (res.ok) {
+        const text = await res.text();
+        const lines = text.trim().split('\n').filter(Boolean);
+        for (let i = lines.length - 1; i >= 0; i--) {
+          try {
+            const ev = JSON.parse(lines[i]);
+            if (ev.event === 'message' && ev.message) {
+              const parsed = JSON.parse(ev.message);
+              if (Array.isArray(parsed.bookings) && guardState.x1cBookings.length === 0) {
+                guardState.x1cBookings = parsed.bookings;
+                guardState.lastBookingsUpdated = parsed.updatedAt;
+              }
+              if (parsed.settings && !guardState.adminSettings) {
+                guardState.adminSettings = parsed.settings;
+                guardState.lastSettingsUpdated = parsed.updatedAt;
+              }
+            }
+          } catch (e) {
+            // ignore malformed line
+          }
+        }
+      }
+    } catch (e) {
+      // ignore network glitch
+    }
+  }
+}
+
+/**
+ * Persists bookings/settings snapshot to Cloudflare KV and secondary backup
+ */
+async function persistBackupData(env, data) {
+  if (env?.GUARD_KV) {
+    try {
+      if (data.bookings) {
+        await env.GUARD_KV.put('x1c_bookings', JSON.stringify(data.bookings));
+      }
+      if (data.settings) {
+        await env.GUARD_KV.put('admin_settings', JSON.stringify(data.settings));
+      }
+    } catch (e) {
+      console.warn('[KV Persist Error]', e.message);
+    }
+  }
+
+  try {
+    const jsonStr = JSON.stringify(data);
+    if (jsonStr.length < 4000) {
+      await fetch(SYNC_BACKUP_TOPIC, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: jsonStr,
+      });
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
+/**
  * Fetches the live settings and alert recipients from the portal cloud store
  */
 async function fetchPortalSettings(url) {
+  if (guardState.adminSettings) {
+    return guardState.adminSettings;
+  }
   try {
     const res = await fetch(url, { method: 'GET', headers: { 'Cache-Control': 'no-cache' } });
     if (res.ok) {
       const json = await res.json();
-      return json?.data || null;
+      if (json?.data) {
+        guardState.adminSettings = json.data;
+        return json.data;
+      }
     }
   } catch (e) {
     // ignore
@@ -81,45 +188,27 @@ function normalizeBooking(b) {
 /**
  * Updates a booking's status to 'in_progress' in the shared cloud storage
  */
-async function updateBookingStatusInCloud(settingsUrl, bookingId, newStatus) {
-  try {
-    const res = await fetch(settingsUrl, { method: 'GET', headers: { 'Cache-Control': 'no-cache' } });
-    if (!res.ok) return false;
-    const json = await res.json();
-    const currentData = json?.data || {};
-    const rawBookings = currentData.bookings || [];
-    let found = false;
-    const nowIso = new Date().toISOString();
-    const updatedBookings = rawBookings.map((b) => {
-      if (b.id === bookingId) {
-        found = true;
-        return {
-          ...b,
-          status: newStatus,
-          actual_started_at: b.actual_started_at || nowIso,
-          updated_at: nowIso,
-        };
-      }
-      return b;
-    });
+async function updateBookingStatusInCloud(env, bookingId, newStatus) {
+  const nowIso = new Date().toISOString();
+  let found = false;
 
-    if (found) {
-      const putRes = await fetch(settingsUrl, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: 'bambu_x1c_admin_settings_v1',
-          data: {
-            ...currentData,
-            bookings: updatedBookings,
-            bookingsUpdatedAt: nowIso,
-          },
-        }),
-      });
-      return putRes.ok;
+  guardState.x1cBookings = guardState.x1cBookings.map((b) => {
+    if (b.id === bookingId) {
+      found = true;
+      return {
+        ...b,
+        status: newStatus,
+        actual_started_at: b.actual_started_at || nowIso,
+        updated_at: nowIso,
+      };
     }
-  } catch (e) {
-    console.error('Failed to update booking status in cloud:', e);
+    return b;
+  });
+
+  if (found) {
+    guardState.lastBookingsUpdated = nowIso;
+    await persistBackupData(env, { bookings: guardState.x1cBookings, updatedAt: nowIso });
+    return true;
   }
   return false;
 }
@@ -127,46 +216,27 @@ async function updateBookingStatusInCloud(settingsUrl, bookingId, newStatus) {
 /**
  * Trims active booking end_time to now + cooldownBufferMinutes and marks it completed in cloud storage
  */
-async function triggerEarlyCompletionInCloud(settingsUrl, bookingId, earlyEndTime, nowIso) {
-  try {
-    const res = await fetch(settingsUrl, { method: 'GET', headers: { 'Cache-Control': 'no-cache' } });
-    if (!res.ok) return false;
-    const json = await res.json();
-    const currentData = json?.data || {};
-    const rawBookings = currentData.bookings || [];
-    let found = false;
+async function triggerEarlyCompletionInCloud(env, bookingId, earlyEndTime, nowIso) {
+  let found = false;
 
-    const updatedBookings = rawBookings.map((b) => {
-      if (b.id === bookingId) {
-        found = true;
-        return {
-          ...b,
-          status: 'completed',
-          end_time: earlyEndTime,
-          actual_completed_at: b.actual_completed_at || nowIso,
-          updated_at: nowIso,
-        };
-      }
-      return b;
-    });
-
-    if (found) {
-      const putRes = await fetch(settingsUrl, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: 'bambu_x1c_admin_settings_v1',
-          data: {
-            ...currentData,
-            bookings: updatedBookings,
-            bookingsUpdatedAt: nowIso,
-          },
-        }),
-      });
-      return putRes.ok;
+  guardState.x1cBookings = guardState.x1cBookings.map((b) => {
+    if (b.id === bookingId) {
+      found = true;
+      return {
+        ...b,
+        status: 'completed',
+        end_time: earlyEndTime,
+        actual_completed_at: b.actual_completed_at || nowIso,
+        updated_at: nowIso,
+      };
     }
-  } catch (e) {
-    console.error('Failed to trigger early completion in cloud:', e);
+    return b;
+  });
+
+  if (found) {
+    guardState.lastBookingsUpdated = nowIso;
+    await persistBackupData(env, { bookings: guardState.x1cBookings, updatedAt: nowIso });
+    return true;
   }
   return false;
 }
@@ -248,6 +318,9 @@ async function checkAndAutoTurnOffP1sLight(connectFn, env, guardConfig, dryRun) 
  * Core Evaluation Cycle: runs every 1 minute
  */
 async function evaluateGuardCycle(env, overrideOptions = {}) {
+  // Ensure state is restored from KV
+  await loadBackupData(env);
+
   const token = env.BAMBU_TOKEN || DEFAULT_CONFIG.bambuToken;
   const p1sSerial = env.BAMBU_P1S_SERIAL || DEFAULT_CONFIG.p1sSerialNumber || '01P00C611402117';
   const serialNumber = overrideOptions.serialNumber || env.BAMBU_SERIAL || DEFAULT_CONFIG.serialNumber;
@@ -298,7 +371,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
     await deleteStoredState(env, `${stateKeyPrefix}mismatchAlertSent`);
 
     const now = new Date();
-    const rawBookings = (overrideOptions.bookings || (isP1s ? (guardState.p1sBookings || []) : (settings?.bookings || []))).map(normalizeBooking).filter(Boolean);
+    const rawBookings = (overrideOptions.bookings || (isP1s ? (guardState.p1sBookings || []) : (guardState.x1cBookings.length > 0 ? guardState.x1cBookings : (settings?.bookings || [])))).map(normalizeBooking).filter(Boolean);
 
     // Active or in_progress bookings
     const activeBookings = rawBookings.filter((b) => {
@@ -322,7 +395,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
         trimmedEndTime = new Date(now.getTime() + cooldownBufferMinutes * 60 * 1000).toISOString();
         if (!isP1s) {
           earlyFinishHandled = await triggerEarlyCompletionInCloud(
-            settingsUrl,
+            env,
             candidateBooking.id,
             trimmedEndTime,
             now.toISOString()
@@ -357,7 +430,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
 
   // 3. Printer is printing: evaluate bookings
   const now = new Date();
-  const rawBookings = (overrideOptions.bookings || (isP1s ? (guardState.p1sBookings || []) : (settings?.bookings || []))).map(normalizeBooking).filter(Boolean);
+  const rawBookings = (overrideOptions.bookings || (isP1s ? (guardState.p1sBookings || []) : (guardState.x1cBookings.length > 0 ? guardState.x1cBookings : (settings?.bookings || [])))).map(normalizeBooking).filter(Boolean);
 
   // Active bookings (currently inside their reserved time slot)
   const activeBookings = rawBookings.filter((b) => {
@@ -476,7 +549,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
     let autoStarted = false;
     if (activeBooking.status !== 'in_progress') {
       if (!isP1s) {
-        autoStarted = await updateBookingStatusInCloud(settingsUrl, activeBooking.id, 'in_progress');
+        autoStarted = await updateBookingStatusInCloud(env, activeBooking.id, 'in_progress');
       } else {
         activeBooking.status = 'in_progress';
         autoStarted = true;
@@ -527,7 +600,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
     let autoStarted = false;
     if (earlyMatch.status !== 'in_progress') {
       if (!isP1s) {
-        autoStarted = await updateBookingStatusInCloud(settingsUrl, earlyMatch.id, 'in_progress');
+        autoStarted = await updateBookingStatusInCloud(env, earlyMatch.id, 'in_progress');
       } else {
         earlyMatch.status = 'in_progress';
         autoStarted = true;
@@ -675,6 +748,179 @@ export default {
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: corsHeaders });
     }
+
+    // Ensure backup is loaded if memory was freshly restarted
+    await loadBackupData(env);
+
+    // 1. GET /api/bookings (returns shared master bookings)
+    if (url.pathname === '/api/bookings' && request.method === 'GET') {
+      await loadBackupData(env, true);
+      return new Response(
+        JSON.stringify({
+          success: true,
+          bookings: guardState.x1cBookings,
+          updatedAt: guardState.lastBookingsUpdated || new Date().toISOString()
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // 2. POST /api/bookings (merges and populates bookings from any client)
+    if (url.pathname === '/api/bookings' && (request.method === 'POST' || request.method === 'PUT')) {
+      try {
+        const body = await request.json();
+        const incoming = Array.isArray(body?.bookings) ? body.bookings : (Array.isArray(body) ? body : []);
+        if (body?.replace === true) {
+          guardState.x1cBookings = incoming;
+        } else {
+          const existingMap = new Map();
+          for (const b of guardState.x1cBookings) {
+            if (b && b.id) existingMap.set(b.id, b);
+          }
+
+          for (const b of incoming) {
+            if (!b || !b.id) continue;
+            if (!existingMap.has(b.id)) {
+              existingMap.set(b.id, b);
+            } else {
+              const oldB = existingMap.get(b.id);
+              const oldTime = new Date(oldB.updated_at || oldB.updatedAt || 0).getTime();
+              const newTime = new Date(b.updated_at || b.updatedAt || 0).getTime();
+              if (newTime >= oldTime) existingMap.set(b.id, b);
+            }
+          }
+          guardState.x1cBookings = Array.from(existingMap.values());
+        }
+        guardState.lastBookingsUpdated = new Date().toISOString();
+        await persistBackupData(env, { bookings: guardState.x1cBookings, updatedAt: guardState.lastBookingsUpdated });
+
+        return new Response(
+          JSON.stringify({
+            success: true,
+            count: guardState.x1cBookings.length,
+            bookings: guardState.x1cBookings,
+            updatedAt: guardState.lastBookingsUpdated
+          }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      } catch (err) {
+        return new Response(JSON.stringify({ success: false, error: err.message }), { status: 400, headers: corsHeaders });
+      }
+    }
+
+    // 3. GET /api/settings
+    if (url.pathname === '/api/settings' && request.method === 'GET') {
+      await loadBackupData(env, true);
+      return new Response(
+        JSON.stringify({
+          success: true,
+          data: guardState.adminSettings || {},
+          updatedAt: guardState.lastSettingsUpdated || new Date().toISOString()
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // 4. POST /api/settings or PUT /api/settings
+    if (url.pathname === '/api/settings' && (request.method === 'POST' || request.method === 'PUT')) {
+      try {
+        const body = await request.json();
+        const nextSettings = body?.data || body?.settings || body;
+        guardState.adminSettings = nextSettings;
+        guardState.lastSettingsUpdated = new Date().toISOString();
+        await persistBackupData(env, { settings: guardState.adminSettings, updatedAt: guardState.lastSettingsUpdated });
+
+        return new Response(
+          JSON.stringify({ success: true, data: guardState.adminSettings, updatedAt: guardState.lastSettingsUpdated }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      } catch (err) {
+        return new Response(JSON.stringify({ success: false, error: err.message }), { status: 400, headers: corsHeaders });
+      }
+    }
+
+    // 5. GET /x1c/status or /api/status (Live X1C Telemetry + Auto-Start Check)
+    if (url.pathname === '/x1c/status' || url.pathname === '/api/status') {
+      const serialNumber = env.BAMBU_SERIAL || DEFAULT_CONFIG.serialNumber;
+      const uid = env.BAMBU_UID || DEFAULT_CONFIG.bambuUid;
+      const token = env.BAMBU_TOKEN || DEFAULT_CONFIG.bambuToken;
+      const x1cConfig = { host: 'us.mqtt.bambulab.com', port: 8883, uid, token, serialNumber, timeoutMs: 10000 };
+
+      try {
+        const status = await queryBambuPrinterStatus(connect, x1cConfig);
+        const state = (status?.gcode_state || 'IDLE').toUpperCase();
+        const subtask = status?.subtask_name || status?.gcode_file || '';
+
+        // Auto-Start Check: If printer is RUNNING / PREPARE, auto-transition matching scheduled booking
+        let autoStartedBooking = null;
+        if (state === 'RUNNING' || state === 'PREPARE') {
+          const now = new Date();
+          const scheduledBookings = guardState.x1cBookings.filter(b => b.status === 'scheduled');
+          for (const b of scheduledBookings) {
+            const match = compareFileNames(subtask, b.file_name || b.fileName, 0.65);
+            if (match.isMatch) {
+              b.status = 'in_progress';
+              b.actual_started_at = b.actual_started_at || now.toISOString();
+              b.updated_at = now.toISOString();
+              autoStartedBooking = b;
+              guardState.lastBookingsUpdated = now.toISOString();
+              await persistBackupData(env, { bookings: guardState.x1cBookings, updatedAt: now.toISOString() });
+              break;
+            }
+          }
+        }
+
+        // Auto-Complete Check: If printer is FINISH and an in_progress booking was running
+        let autoCompletedBooking = null;
+        if (state === 'FINISH') {
+          const inProgress = guardState.x1cBookings.filter(b => b.status === 'in_progress');
+          for (const b of inProgress) {
+            const now = new Date();
+            b.status = 'completed';
+            const earlyEnd = new Date(now.getTime() + 10 * 60 * 1000).toISOString();
+            b.end_time = earlyEnd;
+            b.endTime = earlyEnd;
+            b.actual_completed_at = now.toISOString();
+            b.updated_at = now.toISOString();
+            autoCompletedBooking = b;
+            guardState.lastBookingsUpdated = now.toISOString();
+            await persistBackupData(env, { bookings: guardState.x1cBookings, updatedAt: now.toISOString() });
+            break;
+          }
+        }
+
+        return new Response(
+          JSON.stringify({
+            model: 'Bambu Lab X1-Carbon',
+            serialNumber,
+            gcode_state: state,
+            nozzle_temper: status?.nozzle_temper ?? 0,
+            nozzle_target_temper: status?.raw?.nozzle_target_temper ?? 0,
+            bed_temper: status?.bed_temper ?? 0,
+            bed_target_temper: status?.raw?.bed_target_temper ?? 0,
+            mc_percent: status?.mc_percent ?? 0,
+            mc_remaining_time: status?.mc_remaining_time ?? 0,
+            subtask_name: subtask,
+            autoStartedBooking: autoStartedBooking ? { id: autoStartedBooking.id, file: autoStartedBooking.file_name } : null,
+            autoCompletedBooking: autoCompletedBooking ? { id: autoCompletedBooking.id, file: autoCompletedBooking.file_name } : null,
+            timestamp: new Date().toISOString()
+          }, null, 2),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      } catch (err) {
+        return new Response(
+          JSON.stringify({
+            model: 'Bambu Lab X1-Carbon',
+            serialNumber,
+            gcode_state: 'IDLE',
+            error: err.message || String(err),
+            timestamp: new Date().toISOString()
+          }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+    }
+
 
     // Healthcheck endpoint
     if (url.pathname === '/' || url.pathname === '/health') {

@@ -104,28 +104,16 @@ export function getLocalBookings(): CalendarBooking[] {
 }
 
 const CLOUD_SYNC_URL =
-  "https://api.restful-api.dev/objects/ff808181a09d98f701a117663a7a18ed";
+  "https://bambu-cloud-guard.anmolp5.workers.dev/api/bookings";
 
-async function pushBookingsToCloud(bookings: CalendarBooking[]) {
+async function pushBookingsToCloud(bookings: CalendarBooking[], replace = false) {
   if (typeof window === "undefined") return;
   try {
-    const existing = await fetch(CLOUD_SYNC_URL, { method: "GET" });
-    if (existing.ok) {
-      const json = await existing.json();
-      const currentData = json?.data || {};
-      await fetch(CLOUD_SYNC_URL, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: "bambu_x1c_admin_settings_v1",
-          data: {
-            ...currentData,
-            bookings: bookings,
-            bookingsUpdatedAt: new Date().toISOString(),
-          },
-        }),
-      });
-    }
+    await fetch(CLOUD_SYNC_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bookings, replace: replace || bookings.length === 0 }),
+    });
   } catch {
     // ignore
   }
@@ -133,6 +121,7 @@ async function pushBookingsToCloud(bookings: CalendarBooking[]) {
 
 export async function syncBookingsFromCloud(): Promise<CalendarBooking[]> {
   if (typeof window === "undefined") return [];
+  const localList = getLocalBookings();
   try {
     const res = await fetch(CLOUD_SYNC_URL, {
       method: "GET",
@@ -140,31 +129,75 @@ export async function syncBookingsFromCloud(): Promise<CalendarBooking[]> {
     });
     if (res.ok) {
       const json = await res.json();
-      const cloudList = json?.data?.bookings;
-      if (Array.isArray(cloudList) && cloudList.length > 0) {
-        window.localStorage.setItem(
-          BOOKINGS_STORAGE_KEY,
-          JSON.stringify(cloudList)
-        );
-        bookingListeners.forEach((fn) => fn(cloudList));
-        return cloudList;
+      const cloudList: CalendarBooking[] = Array.isArray(json?.bookings)
+        ? json.bookings
+        : [];
+
+      // Smart Merge & Population:
+      // If any bookings exist in the user's localStorage that are missing in the cloud,
+      // or if local has a newer updated_at timestamp, merge them and push to cloud.
+      const cloudMap = new Map<string, CalendarBooking>(
+        cloudList.map((b) => [b.id, b])
+      );
+      let hasLocalUpdates = false;
+
+      const mergedMap = new Map<string, CalendarBooking>(cloudMap);
+
+      for (const lb of localList) {
+        if (!lb || !lb.id) continue;
+        if (!mergedMap.has(lb.id)) {
+          // Local booking not in cloud yet -> populate it to the cloud!
+          mergedMap.set(lb.id, lb);
+          hasLocalUpdates = true;
+        } else {
+          // If local has newer timestamp, keep local version
+          const cb = mergedMap.get(lb.id)!;
+          const cTime = new Date(cb.updated_at || cb.created_at || 0).getTime();
+          const lTime = new Date(lb.updated_at || lb.created_at || 0).getTime();
+          if (lTime > cTime) {
+            mergedMap.set(lb.id, lb);
+            hasLocalUpdates = true;
+          }
+        }
       }
+
+      const mergedList = Array.from(mergedMap.values());
+
+      if (hasLocalUpdates) {
+        // Immediately populate and sync back to Cloudflare Worker
+        try {
+          await fetch(CLOUD_SYNC_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ bookings: mergedList }),
+          });
+        } catch {
+          // ignore
+        }
+      }
+
+      window.localStorage.setItem(
+        BOOKINGS_STORAGE_KEY,
+        JSON.stringify(mergedList)
+      );
+      bookingListeners.forEach((fn) => fn(mergedList));
+      return mergedList;
     }
   } catch {
-    // ignore
+    // fallback to local bookings if network offline
   }
-  return getLocalBookings();
+  return localList;
 }
 
-function saveLocalBookings(bookings: CalendarBooking[]) {
+function saveLocalBookings(bookings: CalendarBooking[], replace = false) {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(BOOKINGS_STORAGE_KEY, JSON.stringify(bookings));
   bookingListeners.forEach((fn) => fn(bookings));
-  pushBookingsToCloud(bookings);
+  pushBookingsToCloud(bookings, replace);
 }
 
 export function resetDemoData(): CalendarBooking[] {
-  saveLocalBookings([]);
+  saveLocalBookings([], true);
   return [];
 }
 

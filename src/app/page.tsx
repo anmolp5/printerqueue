@@ -72,12 +72,45 @@ export default function HomePage() {
     startOfWeek(new Date(), { weekStartsOn: 1 })
   );
   const [showCompleted, setShowCompleted] = useState<boolean>(true);
+  const [x1cTelemetry, setX1cTelemetry] = useState<{
+    gcode_state: string;
+    subtask_name?: string;
+    mc_percent?: number;
+    mc_remaining_time?: number;
+    nozzle_temper?: number;
+    bed_temper?: number;
+  } | null>(null);
 
   // Modal states
   const [selectedSlotTime, setSelectedSlotTime] = useState<Date | null>(null);
   const [isBookingModalOpen, setIsBookingModalOpen] = useState<boolean>(false);
   const [adminSelectedBooking, setAdminSelectedBooking] =
     useState<CalendarBooking | null>(null);
+
+  // Poll live X1C telemetry and auto-start prints when physical printer starts
+  const pollX1cStatus = useCallback(async () => {
+    try {
+      const res = await fetch("https://bambu-cloud-guard.anmolp5.workers.dev/x1c/status", { cache: "no-store" });
+      if (res.ok) {
+        const data = await res.json();
+        setX1cTelemetry({
+          gcode_state: data.gcode_state || "IDLE",
+          subtask_name: data.subtask_name || "",
+          mc_percent: data.mc_percent ?? 0,
+          mc_remaining_time: data.mc_remaining_time ?? 0,
+          nozzle_temper: data.nozzle_temper ?? 0,
+          bed_temper: data.bed_temper ?? 0,
+        });
+
+        // If the Cloudflare Worker auto-started or completed a booking on the physical printer, sync immediately
+        if (data.autoStartedBooking || data.autoCompletedBooking) {
+          syncBookingsFromCloud();
+        }
+      }
+    } catch {
+      // ignore network hiccups
+    }
+  }, []);
 
   // Load initial bookings & subscribe to updates
   useEffect(() => {
@@ -95,14 +128,16 @@ export default function HomePage() {
     };
   }, []);
 
-  // Periodic 5-minute late-arrival check + 15-second pre-booking reminder & slot-start check + cloud bookings sync
+  // Periodic 5-minute late-arrival check + 15-second pre-booking reminder & slot-start check + cloud bookings sync + X1C status poll
   useEffect(() => {
     checkAndDispatchScheduledReminders();
     syncBookingsFromCloud();
+    pollX1cStatus();
 
     const reminderInterval = setInterval(() => {
       checkAndDispatchScheduledReminders();
       syncBookingsFromCloud();
+      pollX1cStatus();
     }, 15 * 1000);
 
     const lateInterval = setInterval(() => {
@@ -111,6 +146,7 @@ export default function HomePage() {
 
     const onFocus = () => {
       syncBookingsFromCloud();
+      pollX1cStatus();
     };
     window.addEventListener("focus", onFocus);
 
@@ -119,7 +155,7 @@ export default function HomePage() {
       clearInterval(lateInterval);
       window.removeEventListener("focus", onFocus);
     };
-  }, []);
+  }, [pollX1cStatus]);
 
   const handleSelectSlot = useCallback(
     (slotTime: Date) => {
@@ -248,6 +284,16 @@ export default function HomePage() {
                     <span className="inline-flex items-center gap-1 text-amber-300 font-medium truncate">
                       <Wrench className="w-3 h-3 text-amber-400 shrink-0" />
                       <span>Maintenance Mode Active</span>
+                    </span>
+                  ) : x1cTelemetry && (x1cTelemetry.gcode_state === "RUNNING" || x1cTelemetry.gcode_state === "PREPARE") ? (
+                    <span className="inline-flex items-center gap-1.5 text-amber-300 font-medium truncate">
+                      <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping shrink-0" />
+                      <span className="truncate">
+                        {x1cTelemetry.gcode_state === "PREPARE" ? "X1C Heating/Calibrating" : "X1C Printing"}:{" "}
+                        <strong>{x1cTelemetry.subtask_name || activeJobNow?.file_name || "Active Print"}</strong>
+                        {x1cTelemetry.mc_percent ? ` (${x1cTelemetry.mc_percent}%)` : ""}{" "}
+                        {x1cTelemetry.nozzle_temper ? `• ${x1cTelemetry.nozzle_temper}°C` : ""}
+                      </span>
                     </span>
                   ) : activeJobNow ? (
                     <span className="inline-flex items-center gap-1.5 text-amber-300 font-medium truncate">
