@@ -132,23 +132,15 @@ export const P1sTestingSandbox: React.FC<P1sTestingSandboxProps> = ({
     return () => unsubscribe();
   }, []);
 
-  // Fetch Telemetry from /p1s/status (with fallback to Cloudflare worker)
+  // Fetch Telemetry from live Cloudflare Worker
   const fetchTelemetry = useCallback(async () => {
     setIsFetchingTelemetry(true);
     setTelemetryError(null);
     try {
-      // 1. Try local Next.js API route first
-      let res = await fetch("/p1s/status", { cache: "no-store" }).catch(
-        () => null
-      );
-
-      // 2. Fallback to Cloudflare Worker if local route fails
-      if (!res || !res.ok) {
-        res = await fetch(
-          "https://bambu-cloud-guard.anmolp5.workers.dev/p1s/status",
-          { cache: "no-store" }
-        ).catch(() => null);
-      }
+      const res = await fetch(
+        "https://bambu-cloud-guard.anmolp5.workers.dev/p1s/status",
+        { cache: "no-store" }
+      ).catch(() => null);
 
       if (res && res.ok) {
         const data = await res.json();
@@ -167,7 +159,6 @@ export const P1sTestingSandbox: React.FC<P1sTestingSandboxProps> = ({
           updatedAt: data.updatedAt || new Date().toISOString(),
         });
       } else {
-        // Retain current telemetry
         setTelemetry((prev) => ({
           ...prev,
           updatedAt: new Date().toISOString(),
@@ -190,7 +181,6 @@ export const P1sTestingSandbox: React.FC<P1sTestingSandboxProps> = ({
   // Chamber Light Toggle Handlers
   const handleToggleLight = async (action: "on" | "off") => {
     setIsTogglingLight(true);
-    const endpoint = action === "on" ? "/p1s/light/on" : "/p1s/light/off";
     const workerEndpoint = `https://bambu-cloud-guard.anmolp5.workers.dev/p1s/light/${action}`;
 
     // Optimistic update
@@ -200,17 +190,10 @@ export const P1sTestingSandbox: React.FC<P1sTestingSandboxProps> = ({
     }));
 
     try {
-      let res = await fetch(endpoint, {
+      const res = await fetch(workerEndpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
       }).catch(() => null);
-
-      if (!res || !res.ok) {
-        res = await fetch(workerEndpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-        }).catch(() => null);
-      }
 
       if (res && res.ok) {
         showToast(
