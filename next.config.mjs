@@ -3,6 +3,7 @@ const isGithubPages = process.env.GITHUB_PAGES === "true";
 
 const nextConfig = {
   reactStrictMode: false,
+  staticPageGenerationTimeout: 120,
   ...(isGithubPages
     ? {
         output: "export",
