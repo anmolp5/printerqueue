@@ -11,6 +11,7 @@ import {
   CheckCircle2,
   Trash2,
   Lock,
+  Play,
 } from "lucide-react";
 import { BookingStatus, CalendarBooking, UserProfile } from "@/lib/types";
 import {
@@ -18,7 +19,7 @@ import {
   calculateEndTime,
   snapTo15MinSlot,
 } from "@/lib/scheduling";
-import { isBookingOwnedByUser, editBooking } from "@/lib/store";
+import { isBookingOwnedByUser, editBooking, startBookingPrint } from "@/lib/store";
 import { IosWheelTimePicker } from "./IosWheelTimePicker";
 
 interface AdminBookingModalProps {
@@ -378,6 +379,23 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
               </div>
 
               <div className="flex items-center gap-2 ml-auto">
+                {booking.status === "scheduled" && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!user) return;
+                      setIsSaving(true);
+                      await startBookingPrint(booking.id, user);
+                      setIsSaving(false);
+                      onClose();
+                    }}
+                    disabled={isSaving}
+                    className="px-3.5 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 rounded-lg shadow-sm flex items-center gap-1.5 cursor-pointer transition-colors"
+                  >
+                    <Play className="w-3.5 h-3.5 fill-current" />
+                    <span>Start Print Now</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={onClose}

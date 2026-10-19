@@ -162,3 +162,19 @@ export function compareFileNames(actualFileName, bookedFileName, threshold = 0.6
     details: `${Math.round(score * 100)}% similarity (threshold: ${Math.round(threshold * 100)}%)`,
   };
 }
+
+/**
+ * Detects whether a subtask or gcode file name is a default Bambu Studio plate name
+ * (e.g. "0.16mm layer, 2 walls, 15% infill", "0.20mm Standard @BBL X1C", "Plate 1", etc.)
+ */
+export function isGenericPlateName(fileName = '') {
+  if (!fileName || typeof fileName !== 'string') return false;
+  const lower = fileName.trim().toLowerCase();
+  if (/^0\.\d+mm/i.test(lower)) return true;
+  if (/^plate\s*\d+/i.test(lower)) return true;
+  if (/default/i.test(lower)) return true;
+  if (/layer/i.test(lower) && /wall/i.test(lower)) return true;
+  if (/layer/i.test(lower) && /infill/i.test(lower)) return true;
+  return false;
+}
+

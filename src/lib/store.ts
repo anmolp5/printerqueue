@@ -693,6 +693,43 @@ export async function completeAndClearBed(
 }
 
 /**
+ * Manually transitions a booking to 'in_progress', marking actual_started_at
+ * and syncing immediately to cloud storage.
+ */
+export async function startBookingPrint(
+  bookingId: string,
+  user?: UserProfile
+): Promise<{ data?: CalendarBooking; error?: string }> {
+  const all = getLocalBookings();
+  const target = all.find((b) => b.id === bookingId);
+  if (!target) return { error: "Booking not found." };
+  if (user && !isBookingOwnedByUser(target, user) && user.role !== "admin") {
+    return { error: "Unauthorized: You can only start your own reservation." };
+  }
+
+  const now = new Date();
+  const updatedBooking: CalendarBooking = {
+    ...target,
+    status: "in_progress",
+    actual_started_at: target.actual_started_at || now.toISOString(),
+    updated_at: now.toISOString(),
+  };
+
+  const updatedList = all.map((b) => (b.id === bookingId ? updatedBooking : b));
+  saveLocalBookings(updatedList);
+
+  // Sync to Cloudflare Worker
+  fetch("https://bambu-cloud-guard.anmolp5.workers.dev/api/bookings/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ bookingId }),
+  }).catch(() => null);
+
+  return { data: updatedBooking };
+}
+
+
+/**
  * Manually or automatically sends the pre-booking reminder email ("X minutes before slot")
  * or the "Slot Starting Now" notification email.
  */

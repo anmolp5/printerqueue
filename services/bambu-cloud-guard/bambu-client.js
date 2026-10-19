@@ -168,6 +168,10 @@ export async function queryBambuPrinterStatus(connectFn, config) {
             clearTimeout(timeoutHandle);
             const lights = parsed.print.lights_report || [];
             const chamberLightObj = lights.find((l) => l.node === 'chamber_light');
+            const hms = parsed.print.hms || [];
+            const printError = parsed.print.print_error ?? 0;
+            const failReason = parsed.print.fail_reason ?? '';
+            const errorInfo = decodeBambuError(parsed.print);
             return {
               gcode_state: parsed.print.gcode_state || 'IDLE',
               subtask_name: parsed.print.subtask_name || '',
@@ -178,6 +182,10 @@ export async function queryBambuPrinterStatus(connectFn, config) {
               bed_temper: parsed.print.bed_temper ?? 0,
               lights_report: lights,
               chamber_light: chamberLightObj ? chamberLightObj.mode : 'off',
+              hms,
+              print_error: printError,
+              fail_reason: failReason,
+              errorInfo,
               raw: parsed.print
             };
           }
@@ -298,4 +306,116 @@ export async function sendBambuLightCommand(connectFn, config, mode = 'off') {
     try { await socket.close(); } catch(e){}
   }
 }
+
+/**
+ * Decodes Bambu Lab HMS (Health Management System) error codes and error states.
+ * Formats codes into standardized hex strings and classifies failure modes:
+ * AI Spaghetti, First-layer defect, Filament runout, Nozzle clumping, etc.
+ */
+export function decodeBambuError(printObj = {}) {
+  const hms = Array.isArray(printObj.hms) ? printObj.hms : [];
+  const printError = Number(printObj.print_error ?? 0);
+  const failReason = String(printObj.fail_reason ?? '');
+  const state = (printObj.gcode_state || '').toUpperCase();
+
+  const formattedCodes = [];
+  let isSpaghetti = false;
+  let isFirstLayer = false;
+  let isFilamentIssue = false;
+  let isNozzleIssue = false;
+  let isBuildPlateIssue = false;
+  let isCoverDetached = false;
+
+  for (const item of hms) {
+    if (item && (item.attr !== undefined || item.code !== undefined)) {
+      const attrHex = ((item.attr >>> 0) || 0).toString(16).padStart(8, '0').toUpperCase();
+      const codeHex = ((item.code >>> 0) || 0).toString(16).padStart(8, '0').toUpperCase();
+      const fullHex = `${attrHex.slice(0, 4)}_${attrHex.slice(4)}_${codeHex.slice(0, 4)}_${codeHex.slice(4)}`;
+      formattedCodes.push(fullHex);
+
+      // AI Spaghetti detection code patterns
+      if (fullHex.includes('0001_0007') || attrHex.startsWith('03008011') || fullHex.includes('SPAGHETTI')) {
+        isSpaghetti = true;
+      }
+      // Micro-LiDAR / First layer defect
+      else if (fullHex.includes('0001_0004') || fullHex.includes('0001_0005') || fullHex.includes('0001_0008')) {
+        isFirstLayer = true;
+      }
+      // Build plate position / marker missing
+      else if (fullHex.includes('0001_0001') || fullHex.includes('0001_0002')) {
+        isBuildPlateIssue = true;
+      }
+      // Nozzle clumping
+      else if (fullHex.includes('0001_0009')) {
+        isNozzleIssue = true;
+      }
+      // Filament runout / AMS jam
+      else if (attrHex.startsWith('03008001') || attrHex.startsWith('07008003') || attrHex.startsWith('07008004') || attrHex.startsWith('07008006')) {
+        isFilamentIssue = true;
+      }
+      // Toolhead front cover detached
+      else if (attrHex.startsWith('03008007') || attrHex.startsWith('05008007')) {
+        isCoverDetached = true;
+      }
+    } else if (typeof item === 'string') {
+      formattedCodes.push(item);
+      if (item.toLowerCase().includes('spaghetti')) isSpaghetti = true;
+      if (item.toLowerCase().includes('filament')) isFilamentIssue = true;
+    }
+  }
+
+  // Also check fail_reason string
+  const failLower = failReason.toLowerCase();
+  if (failLower.includes('spaghetti')) isSpaghetti = true;
+  if (failLower.includes('filament') || failLower.includes('runout') || failLower.includes('ams')) isFilamentIssue = true;
+  if (failLower.includes('first layer') || failLower.includes('lidar')) isFirstLayer = true;
+
+  // Determine category and human-readable reason
+  let category = 'normal';
+  let reason = '';
+
+  if (isSpaghetti) {
+    category = 'ai_spaghetti';
+    reason = 'AI Spaghetti Detection (Possible Print Detachment)';
+  } else if (isFirstLayer) {
+    category = 'first_layer_defect';
+    reason = 'First-Layer Inspection Defect (Micro-LiDAR Anomaly)';
+  } else if (isFilamentIssue) {
+    category = 'filament_runout';
+    reason = 'Filament Runout or AMS Feed Failure';
+  } else if (isNozzleIssue) {
+    category = 'nozzle_clumping';
+    reason = 'Nozzle Clumping Detected';
+  } else if (isBuildPlateIssue) {
+    category = 'build_plate_missing';
+    reason = 'Build Plate Localization Marker Missing or Misaligned';
+  } else if (isCoverDetached) {
+    category = 'toolhead_cover_detached';
+    reason = 'Toolhead Front Cover Detached';
+  } else if (formattedCodes.length > 0) {
+    category = 'hms_warning';
+    reason = `Printer Warning (${formattedCodes[0]})`;
+  } else if (printError !== 0) {
+    category = 'hardware_error';
+    reason = `Hardware Error Code #${printError}`;
+  } else if (state === 'PAUSE') {
+    category = 'user_paused';
+    reason = 'Print Paused (Waiting for User Intervention)';
+  } else if (state === 'FAILED') {
+    category = 'print_failed';
+    reason = 'Print Job Aborted or Failed';
+  }
+
+  return {
+    isPaused: state === 'PAUSE',
+    isFailed: state === 'FAILED',
+    hasError: category !== 'normal' && category !== 'user_paused',
+    category,
+    reason,
+    formattedCodes,
+    printError,
+    failReason
+  };
+}
+
 

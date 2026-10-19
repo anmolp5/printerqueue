@@ -74,6 +74,9 @@ export default function HomePage() {
   const [showCompleted, setShowCompleted] = useState<boolean>(true);
   const [x1cTelemetry, setX1cTelemetry] = useState<{
     gcode_state: string;
+    isPaused?: boolean;
+    pauseReason?: string;
+    errorCategory?: string;
     subtask_name?: string;
     mc_percent?: number;
     mc_remaining_time?: number;
@@ -95,6 +98,9 @@ export default function HomePage() {
         const data = await res.json();
         setX1cTelemetry({
           gcode_state: data.gcode_state || "IDLE",
+          isPaused: data.isPaused ?? (data.gcode_state === "PAUSE"),
+          pauseReason: data.pauseReason || "",
+          errorCategory: data.errorCategory || "normal",
           subtask_name: data.subtask_name || "",
           mc_percent: data.mc_percent ?? 0,
           mc_remaining_time: data.mc_remaining_time ?? 0,
@@ -284,6 +290,13 @@ export default function HomePage() {
                     <span className="inline-flex items-center gap-1 text-amber-300 font-medium truncate">
                       <Wrench className="w-3 h-3 text-amber-400 shrink-0" />
                       <span>Maintenance Mode Active</span>
+                    </span>
+                  ) : x1cTelemetry && x1cTelemetry.isPaused ? (
+                    <span className="inline-flex items-center gap-1.5 text-rose-300 font-bold truncate">
+                      <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping shrink-0" />
+                      <span className="truncate">
+                        ⚠️ X1C Paused: {x1cTelemetry.pauseReason || "Attention Needed"}
+                      </span>
                     </span>
                   ) : x1cTelemetry && (x1cTelemetry.gcode_state === "RUNNING" || x1cTelemetry.gcode_state === "PREPARE") ? (
                     <span className="inline-flex items-center gap-1.5 text-amber-300 font-medium truncate">

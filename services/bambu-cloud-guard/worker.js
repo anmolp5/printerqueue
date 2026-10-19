@@ -9,9 +9,10 @@
  */
 
 import { connect } from 'cloudflare:sockets';
-import { queryBambuPrinterStatus, sendBambuCommand, sendBambuLightCommand } from './bambu-client.js';
-import { compareFileNames } from './matcher.js';
+import { queryBambuPrinterStatus, sendBambuCommand, sendBambuLightCommand, decodeBambuError } from './bambu-client.js';
+import { compareFileNames, isGenericPlateName } from './matcher.js';
 import { sendGuardAlert } from './notifier.js';
+
 
 // Configuration Defaults
 const DEFAULT_CONFIG = {
@@ -318,8 +319,8 @@ async function checkAndAutoTurnOffP1sLight(connectFn, env, guardConfig, dryRun) 
  * Core Evaluation Cycle: runs every 1 minute
  */
 async function evaluateGuardCycle(env, overrideOptions = {}) {
-  // Ensure state is restored from KV
-  await loadBackupData(env);
+  // Ensure state is restored from KV (force fresh read)
+  await loadBackupData(env, true);
 
   const token = env.BAMBU_TOKEN || DEFAULT_CONFIG.bambuToken;
   const p1sSerial = env.BAMBU_P1S_SERIAL || DEFAULT_CONFIG.p1sSerialNumber || '01P00C611402117';
@@ -364,6 +365,62 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
   guardState.lastEvaluatedAt = new Date().toISOString();
   const stateKeyPrefix = `${serialNumber}_`;
 
+  // Handle Failure / Pause Detection (e.g. AI Spaghetti, LiDAR First Layer Defect, Filament Runout)
+  if (state === 'PAUSE') {
+    const errorInfo = printerStatus.errorInfo || decodeBambuError(printerStatus.raw || printerStatus);
+    const now = new Date();
+    const rawBookings = (overrideOptions.bookings || (isP1s ? (guardState.p1sBookings || []) : (guardState.x1cBookings.length > 0 ? guardState.x1cBookings : (settings?.bookings || [])))).map(normalizeBooking).filter(Boolean);
+    const candidateBooking = rawBookings.find((b) => {
+      if (['canceled', 'canceled_late', 'canceled_user', 'canceled_admin', 'completed'].includes(b.status)) return false;
+      const start = new Date(b.startTime);
+      const end = new Date(b.endTime);
+      return (b.status === 'in_progress' || (now >= start && now <= end));
+    });
+
+    if (candidateBooking) {
+      const pauseAlertKey = `${stateKeyPrefix}pauseAlertSent_${candidateBooking.id}`;
+      const pauseAlertSent = await getStoredState(env, pauseAlertKey, false);
+      if (!pauseAlertSent || pauseAlertSent === 'false') {
+        const studentEmail = candidateBooking.userEmail;
+        const targetRecipients = studentEmail && studentEmail.includes('@')
+          ? Array.from(new Set([studentEmail, ...recipients]))
+          : recipients;
+
+        await sendGuardAlert({
+          recipients: targetRecipients,
+          subject: `⚠️ [ACTION REQUIRED] Print Paused: "${currentFile || candidateBooking.fileName}" on ${isP1s ? 'P1S Sandbox' : 'X1C Lab'}`,
+          title: `Print Paused: ${errorInfo.reason || 'Attention Needed'}`,
+          severity: 'warning',
+          message: `The print for student "${candidateBooking.userName || candidateBooking.userEmail}" has PAUSED on the printer.\n\n• Detected Reason: ${errorInfo.reason || 'Printer paused waiting for user intervention'}\n• Reservation: "${candidateBooking.fileName}"\n• Active Window: ${new Date(candidateBooking.startTime).toLocaleTimeString()} - ${new Date(candidateBooking.endTime).toLocaleTimeString()}\n\nYour reservation slot remains ACTIVE on the calendar so you can inspect the printer, fix the issue, and resume your print.`,
+          printerInfo: {
+            serialNumber,
+            fileName: currentFile,
+            state,
+            progress: printerStatus.mc_percent,
+            remainingTime: printerStatus.mc_remaining_time
+          },
+          resendApiKey,
+          dryRun
+        });
+        await setStoredState(env, pauseAlertKey, 'true');
+      }
+    }
+
+    return {
+      status: 'printer_paused',
+      isPaused: true,
+      pauseReason: errorInfo.reason || 'Printer Paused',
+      errorCategory: errorInfo.category || 'user_paused',
+      printerState: state,
+      printerName: isP1s ? 'Bambu Lab P1S' : 'Bambu Lab X1-Carbon',
+      serialNumber,
+      dryRun,
+      candidateBookingId: candidateBooking?.id,
+      evaluatedAt: guardState.lastEvaluatedAt,
+      p1sLight: p1sLightReport
+    };
+  }
+
   // If printer is IDLE or FINISH, clear tracking timers and evaluate Early Finish Detection
   if (!isPrinting) {
     await deleteStoredState(env, `${stateKeyPrefix}unscheduledFirstSeenAt`);
@@ -386,13 +443,29 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
     let earlyFinishHandled = false;
     let trimmedEndTime = null;
 
-    if (candidateBooking) {
-      const remainingMs = new Date(candidateBooking.endTime).getTime() - now.getTime();
-      const hasRemainingTime = remainingMs > (cooldownBufferMinutes + 1) * 60 * 1000;
+    // INVARIANT: "The printer has to have started before it can finish."
+    // 1. Booking MUST be currently in_progress (actively printing)
+    // 2. Booking MUST have an actual_started_at timestamp
+    // 3. Print MUST have elapsed at least 60 seconds since start
+    // 4. Physical printer state MUST be FINISH (or transition from printing to IDLE)
+    const wasPrinting = guardState[`${stateKeyPrefix}wasPrinting`] === true;
+    const isPhysicalFinish = state === 'FINISH' || (wasPrinting && state === 'IDLE');
 
-      // If printer state is FINISH or IDLE (and was printing or activeBooking has remaining time), trigger early completion
-      if (guardState[`${stateKeyPrefix}wasPrinting`] || hasRemainingTime || candidateBooking.status === 'in_progress') {
-        trimmedEndTime = new Date(now.getTime() + cooldownBufferMinutes * 60 * 1000).toISOString();
+    if (candidateBooking && candidateBooking.status === 'in_progress' && candidateBooking.actual_started_at && isPhysicalFinish) {
+      const startMs = new Date(candidateBooking.actual_started_at).getTime();
+      const elapsedMs = now.getTime() - startMs;
+
+      if (!isNaN(startMs) && elapsedMs >= 60 * 1000) {
+        const remainingMs = new Date(candidateBooking.endTime).getTime() - now.getTime();
+        const cooldownMs = cooldownBufferMinutes * 60 * 1000;
+
+        // Trim end_time to now + cooldown buffer if remaining time is greater than buffer
+        if (remainingMs > cooldownMs) {
+          trimmedEndTime = new Date(now.getTime() + cooldownMs).toISOString();
+        } else {
+          trimmedEndTime = candidateBooking.endTime;
+        }
+
         if (!isP1s) {
           earlyFinishHandled = await triggerEarlyCompletionInCloud(
             env,
@@ -444,9 +517,11 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
 
   // ==================== CASE A: ACTIVE BOOKING FOUND ====================
   if (activeBooking) {
+    const isGeneric = isGenericPlateName(currentFile);
     const matchResult = compareFileNames(currentFile, activeBooking.fileName, similarityThreshold);
+    const isAuthorized = matchResult.isMatch || isGeneric;
 
-    if (!matchResult.isMatch) {
+    if (!isAuthorized) {
       // Sliced file mismatch during user's reserved slot!
       const mismatchSent = await getStoredState(env, `${stateKeyPrefix}mismatchAlertSent`, false);
       if (!mismatchSent || mismatchSent === 'false') {
@@ -583,11 +658,12 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
 
   let earlyMatch = null;
   let earlyMatchResult = null;
+  const isGeneric = isGenericPlateName(currentFile);
   for (const b of upcomingBookings) {
     const res = compareFileNames(currentFile, b.fileName, similarityThreshold);
-    if (res.isMatch) {
+    if (res.isMatch || isGeneric) {
       earlyMatch = b;
-      earlyMatchResult = res;
+      earlyMatchResult = res.isMatch ? res : { isMatch: true, score: 0.95, normalizedBooked: b.fileName, normalizedActual: currentFile };
       break;
     }
   }
@@ -808,7 +884,39 @@ export default {
       }
     }
 
-    // 3. GET /api/settings
+    // 3. POST /api/bookings/start (Manual check-in / start print from portal UI)
+    if (url.pathname === '/api/bookings/start' && (request.method === 'POST' || request.method === 'PUT')) {
+      try {
+        const body = await request.json();
+        const bookingId = body?.id || body?.bookingId;
+        if (!bookingId) {
+          return new Response(JSON.stringify({ success: false, error: 'bookingId is required' }), { status: 400, headers: corsHeaders });
+        }
+        const now = new Date().toISOString();
+        let updated = false;
+        guardState.x1cBookings = guardState.x1cBookings.map((b) => {
+          if (b.id === bookingId) {
+            updated = true;
+            return {
+              ...b,
+              status: 'in_progress',
+              actual_started_at: b.actual_started_at || now,
+              updated_at: now
+            };
+          }
+          return b;
+        });
+        if (updated) {
+          guardState.lastBookingsUpdated = now;
+          await persistBackupData(env, { bookings: guardState.x1cBookings, updatedAt: now });
+        }
+        return new Response(JSON.stringify({ success: updated, updatedAt: now }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ success: false, error: err.message }), { status: 400, headers: corsHeaders });
+      }
+    }
+
+    // 4. GET /api/settings
     if (url.pathname === '/api/settings' && request.method === 'GET') {
       await loadBackupData(env, true);
       return new Response(
@@ -821,7 +929,7 @@ export default {
       );
     }
 
-    // 4. POST /api/settings or PUT /api/settings
+    // 5. POST /api/settings or PUT /api/settings
     if (url.pathname === '/api/settings' && (request.method === 'POST' || request.method === 'PUT')) {
       try {
         const body = await request.json();
@@ -839,7 +947,7 @@ export default {
       }
     }
 
-    // 5. GET /x1c/status or /api/status (Live X1C Telemetry + Auto-Start Check)
+    // 6. GET /x1c/status or /api/status (Live X1C Telemetry + Auto-Start Check)
     if (url.pathname === '/x1c/status' || url.pathname === '/api/status') {
       const serialNumber = env.BAMBU_SERIAL || DEFAULT_CONFIG.serialNumber;
       const uid = env.BAMBU_UID || DEFAULT_CONFIG.bambuUid;
@@ -857,8 +965,12 @@ export default {
           const now = new Date();
           const scheduledBookings = guardState.x1cBookings.filter(b => b.status === 'scheduled');
           for (const b of scheduledBookings) {
+            const startMs = new Date(b.start_time || b.startTime).getTime();
+            const endMs = new Date(b.end_time || b.endTime).getTime();
+            const isInsideSlot = !isNaN(startMs) && !isNaN(endMs) && now.getTime() >= (startMs - 30 * 60 * 1000) && now.getTime() <= endMs;
             const match = compareFileNames(subtask, b.file_name || b.fileName, 0.65);
-            if (match.isMatch) {
+            const isGeneric = isGenericPlateName(subtask);
+            if (match.isMatch || (isGeneric && isInsideSlot)) {
               b.status = 'in_progress';
               b.actual_started_at = b.actual_started_at || now.toISOString();
               b.updated_at = now.toISOString();
@@ -870,30 +982,40 @@ export default {
           }
         }
 
-        // Auto-Complete Check: If printer is FINISH and an in_progress booking was running
+        // Auto-Complete Check: Must start before it can finish!
         let autoCompletedBooking = null;
         if (state === 'FINISH') {
-          const inProgress = guardState.x1cBookings.filter(b => b.status === 'in_progress');
+          const inProgress = guardState.x1cBookings.filter(b => b.status === 'in_progress' && b.actual_started_at);
           for (const b of inProgress) {
             const now = new Date();
-            b.status = 'completed';
-            const earlyEnd = new Date(now.getTime() + 10 * 60 * 1000).toISOString();
-            b.end_time = earlyEnd;
-            b.endTime = earlyEnd;
-            b.actual_completed_at = now.toISOString();
-            b.updated_at = now.toISOString();
-            autoCompletedBooking = b;
-            guardState.lastBookingsUpdated = now.toISOString();
-            await persistBackupData(env, { bookings: guardState.x1cBookings, updatedAt: now.toISOString() });
-            break;
+            const startMs = new Date(b.actual_started_at).getTime();
+            if (!isNaN(startMs) && now.getTime() - startMs >= 60 * 1000) {
+              b.status = 'completed';
+              const earlyEnd = new Date(now.getTime() + 10 * 60 * 1000).toISOString();
+              b.end_time = earlyEnd;
+              b.endTime = earlyEnd;
+              b.actual_completed_at = now.toISOString();
+              b.updated_at = now.toISOString();
+              autoCompletedBooking = b;
+              guardState.lastBookingsUpdated = now.toISOString();
+              await persistBackupData(env, { bookings: guardState.x1cBookings, updatedAt: now.toISOString() });
+              break;
+            }
           }
         }
+
+        const errorInfo = status?.errorInfo || decodeBambuError(status?.raw || status);
+        const isPaused = state === 'PAUSE';
+        const pauseReason = errorInfo?.reason || (isPaused ? 'Printer Paused' : '');
 
         return new Response(
           JSON.stringify({
             model: 'Bambu Lab X1-Carbon',
             serialNumber,
             gcode_state: state,
+            isPaused,
+            pauseReason,
+            errorCategory: errorInfo?.category || 'normal',
             nozzle_temper: status?.nozzle_temper ?? 0,
             nozzle_target_temper: status?.raw?.nozzle_target_temper ?? 0,
             bed_temper: status?.bed_temper ?? 0,
@@ -901,6 +1023,8 @@ export default {
             mc_percent: status?.mc_percent ?? 0,
             mc_remaining_time: status?.mc_remaining_time ?? 0,
             subtask_name: subtask,
+            hms: status?.hms || [],
+            print_error: status?.print_error || 0,
             autoStartedBooking: autoStartedBooking ? { id: autoStartedBooking.id, file: autoStartedBooking.file_name } : null,
             autoCompletedBooking: autoCompletedBooking ? { id: autoCompletedBooking.id, file: autoCompletedBooking.file_name } : null,
             timestamp: new Date().toISOString()

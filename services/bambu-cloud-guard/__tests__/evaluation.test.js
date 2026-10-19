@@ -1,4 +1,4 @@
-import { compareFileNames } from '../matcher.js';
+import { compareFileNames, isGenericPlateName } from '../matcher.js';
 
 console.log('====================================================');
 console.log('🧪 RUNNING EARLY-ARRIVAL & GUARD LOGIC UNIT TESTS');
@@ -35,6 +35,14 @@ function evaluateTestBooking(
 
   const bookings = (rawBookings || []).map(normalizeBooking).filter(Boolean);
 
+  // Handle pause state
+  if (printerStatus.gcode_state === 'PAUSE') {
+    return {
+      action: 'printer_paused',
+      booking: bookings.find(b => b.status === 'in_progress' || (now >= new Date(b.startTime) && now <= new Date(b.endTime)))
+    };
+  }
+
   // Early finish detection when printer is IDLE or FINISH
   if (!isPrinting) {
     const activeBookings = bookings.filter((b) => {
@@ -45,11 +53,18 @@ function evaluateTestBooking(
     });
 
     const candidate = activeBookings[0] || bookings.find(b => b.status === 'in_progress' && new Date(b.endTime) > now);
-    if (candidate) {
-      const remainingMs = new Date(candidate.endTime).getTime() - now.getTime();
-      const hasRemainingTime = remainingMs > (cooldownBufferMinutes + 1) * 60 * 1000;
-      if (wasPrinting || hasRemainingTime || candidate.status === 'in_progress') {
-        const trimmedEndTime = new Date(now.getTime() + cooldownBufferMinutes * 60 * 1000).toISOString();
+    const isPhysicalFinish = printerStatus.gcode_state === 'FINISH' || (wasPrinting && !isPrinting);
+
+    // INVARIANT: "The printer has to have started before it can finish."
+    if (candidate && candidate.status === 'in_progress' && candidate.actual_started_at && isPhysicalFinish) {
+      const startMs = new Date(candidate.actual_started_at).getTime();
+      const elapsedMs = now.getTime() - startMs;
+      if (!isNaN(startMs) && elapsedMs >= 60 * 1000) {
+        const remainingMs = new Date(candidate.endTime).getTime() - now.getTime();
+        const cooldownMs = cooldownBufferMinutes * 60 * 1000;
+        const trimmedEndTime = remainingMs > cooldownMs
+          ? new Date(now.getTime() + cooldownMs).toISOString()
+          : candidate.endTime;
         return {
           action: 'early_completion_triggered',
           booking: { ...candidate, status: 'completed', end_time: trimmedEndTime },
@@ -71,8 +86,9 @@ function evaluateTestBooking(
   const activeBooking = activeBookings[0] || null;
 
   if (activeBooking) {
+    const isGeneric = isGenericPlateName(currentFile);
     const match = compareFileNames(currentFile, activeBooking.fileName, similarityThreshold);
-    if (!match.isMatch) {
+    if (!match.isMatch && !isGeneric) {
       const mismatchAction = guardConfig.fileMismatchAction || 'pause';
       return {
         action: `mismatch_${mismatchAction}`,
@@ -345,7 +361,7 @@ const test11 = evaluateTestBooking(
 );
 console.log('Test 11 (Duration within 15m tolerance):', test11.action === 'authorized_print' ? 'PASSED ✅' : 'FAILED ❌', test11);
 
-// Test 12: Early finish detection: Printer FINISH/IDLE while active booking has remaining time
+// Test 12: Early finish detection: Printer FINISH after booking was in_progress with confirmed actual_started_at
 // Booking was until 15:00 (1 hour remaining). Now is 14:00. Cooldown buffer = 10 min.
 // Should trim end_time to 14:10:00Z and mark completed.
 const test12 = evaluateTestBooking(
@@ -358,12 +374,14 @@ const test12 = evaluateTestBooking(
       file_name: 'completed_part.3mf',
       user_email: 'grad@illinois.edu',
       status: 'in_progress',
+      actual_started_at: '2026-10-15T13:30:00Z',
     },
   ],
   now,
   0.65,
   {
     isPrinting: false,
+    printerStatus: { gcode_state: 'FINISH' },
     cooldownBufferMinutes: 10
   }
 );
@@ -375,5 +393,92 @@ console.log(
   test12
 );
 
-console.log('\n🎉 ALL EARLY-ARRIVAL, DURATION, POLICY TOGGLE & EARLY-FINISH TESTS COMPLETED SUCCESSFULLY!\n');
+// Test 13: INVARIANT: Scheduled booking when printer is IDLE (user just arrived, preparing print) -> MUST NOT COMPLETE!
+const test13 = evaluateTestBooking(
+  '',
+  [
+    {
+      id: 'b-13',
+      start_time: '2026-10-15T14:00:00Z',
+      end_time: '2026-10-15T16:00:00Z',
+      file_name: 'drone_plate.3mf',
+      user_email: 'rose@illinois.edu',
+      status: 'scheduled',
+    },
+  ],
+  new Date('2026-10-15T14:02:00Z'), // 2 minutes into slot
+  0.65,
+  {
+    isPrinting: false,
+    printerStatus: { gcode_state: 'IDLE' },
+    cooldownBufferMinutes: 10
+  }
+);
+console.log(
+  'Test 13 (Printer IDLE during scheduled booking NEVER auto-completes):',
+  test13.action === 'idle'
+    ? 'PASSED ✅'
+    : 'FAILED ❌',
+  test13
+);
+
+// Test 14: Generic Bambu Studio plate name during active booking -> Authorized
+const test14 = evaluateTestBooking(
+  '0.16mm layer, 2 walls, 15% infill',
+  [
+    {
+      id: 'b-14',
+      start_time: '2026-10-15T13:50:00Z',
+      end_time: '2026-10-15T15:30:00Z',
+      file_name: 'scaled_thyroid_model.3mf',
+      user_email: 'bio@illinois.edu',
+      status: 'scheduled',
+    },
+  ],
+  now,
+  0.65,
+  {
+    isPrinting: true,
+    printerStatus: { gcode_state: 'RUNNING', mc_remaining_time: 40 }
+  }
+);
+console.log(
+  'Test 14 (Bambu Studio default plate name accepted during active booking):',
+  test14.action === 'authorized_print'
+    ? 'PASSED ✅'
+    : 'FAILED ❌',
+  test14
+);
+
+// Test 15: Printer state PAUSE (e.g. AI spaghetti / filament runout) -> Preserves booking
+const test15 = evaluateTestBooking(
+  'drone_chassis.3mf',
+  [
+    {
+      id: 'b-15',
+      start_time: '2026-10-15T13:50:00Z',
+      end_time: '2026-10-15T15:30:00Z',
+      file_name: 'drone_chassis.3mf',
+      user_email: 'aero@illinois.edu',
+      status: 'in_progress',
+      actual_started_at: '2026-10-15T13:50:00Z',
+    },
+  ],
+  now,
+  0.65,
+  {
+    isPrinting: false,
+    printerStatus: { gcode_state: 'PAUSE' }
+  }
+);
+console.log(
+  'Test 15 (Printer PAUSE preserves booking and returns printer_paused):',
+  test15.action === 'printer_paused' && test15.booking?.id === 'b-15'
+    ? 'PASSED ✅'
+    : 'FAILED ❌',
+  test15
+);
+
+console.log('\n🎉 ALL EARLY-ARRIVAL, DURATION, POLICY TOGGLE, EARLY-FINISH & PAUSE TESTS COMPLETED SUCCESSFULLY!\n');
+
 
