@@ -31,6 +31,8 @@ function evaluateTestBooking(
     isPrinting = true,
     wasPrinting = false,
     cooldownBufferMinutes = 10,
+    stateStore = {},
+    simulateGrace = false,
   } = options;
 
   const bookings = (rawBookings || []).map(normalizeBooking).filter(Boolean);
@@ -45,6 +47,10 @@ function evaluateTestBooking(
 
   // Early finish detection when printer is IDLE or FINISH
   if (!isPrinting) {
+    if (stateStore) {
+      delete stateStore.unscheduledFirstSeenAt;
+      delete stateStore.unscheduledInitialAlertSent;
+    }
     const activeBookings = bookings.filter((b) => {
       if (['canceled', 'canceled_late', 'canceled_user', 'canceled_admin', 'completed'].includes(b.status)) return false;
       const start = new Date(b.startTime);
@@ -98,6 +104,11 @@ function evaluateTestBooking(
       };
     }
 
+    if (stateStore) {
+      delete stateStore.unscheduledFirstSeenAt;
+      delete stateStore.unscheduledInitialAlertSent;
+    }
+
     // Condition 3: Duration / Overtime Check
     const endMs = new Date(activeBooking.endTime).getTime();
     const remainingReservationMinutes = Math.max(0, Math.round((endMs - now.getTime()) / 60000));
@@ -135,6 +146,10 @@ function evaluateTestBooking(
   for (const b of upcomingBookings) {
     const match = compareFileNames(currentFile, b.fileName, similarityThreshold);
     if (match.isMatch) {
+      if (stateStore) {
+        delete stateStore.unscheduledFirstSeenAt;
+        delete stateStore.unscheduledInitialAlertSent;
+      }
       return {
         action: 'authorized_early_start',
         booking: b,
@@ -145,9 +160,37 @@ function evaluateTestBooking(
   }
 
   const unscheduledAction = guardConfig.unscheduledPrintAction || 'cancel';
+  const graceMinutes = guardConfig.gracePeriodMinutes || 1;
+  const firstSeen = stateStore.unscheduledFirstSeenAt || now.getTime();
+  stateStore.unscheduledFirstSeenAt = firstSeen;
+  const elapsedMs = now.getTime() - firstSeen;
+  const graceMs = graceMinutes * 60 * 1000;
+
+  let justSentInitialAlert = false;
+  if (!stateStore.unscheduledInitialAlertSent || stateStore.unscheduledInitialAlertSent !== currentFile) {
+    stateStore.unscheduledInitialAlertSent = currentFile;
+    justSentInitialAlert = true;
+  }
+
+  if (simulateGrace && elapsedMs < graceMs) {
+    return {
+      action: 'grace_period',
+      status: 'grace_period',
+      enforcementAction: unscheduledAction,
+      initialAlertSent: true,
+      justSentInitialAlert,
+      currentFile,
+      elapsedSeconds: Math.round(elapsedMs / 1000),
+      graceRemainingSec: Math.max(0, Math.round((graceMs - elapsedMs) / 1000)),
+    };
+  }
+
   return {
     action: 'rogue_unscheduled',
     enforcementAction: unscheduledAction,
+    initialAlertSent: true,
+    justSentInitialAlert,
+    currentFile,
   };
 }
 
@@ -479,6 +522,98 @@ console.log(
   test15
 );
 
-console.log('\n🎉 ALL EARLY-ARRIVAL, DURATION, POLICY TOGGLE, EARLY-FINISH & PAUSE TESTS COMPLETED SUCCESSFULLY!\n');
+// Test 16: Unscheduled print first detected -> Dispatches immediate email alert
+const testStateStore = {};
+const test16 = evaluateTestBooking(
+  'unregistered_print.gcode',
+  [],
+  now,
+  0.65,
+  {
+    isPrinting: true,
+    stateStore: testStateStore,
+    simulateGrace: true,
+  }
+);
+console.log(
+  'Test 16 (Unscheduled print first detected -> Dispatches immediate email alert):',
+  test16.action === 'grace_period' && test16.initialAlertSent === true && test16.justSentInitialAlert === true
+    ? 'PASSED ✅'
+    : 'FAILED ❌',
+  test16
+);
+
+// Test 17: Subsequent cycle with same unscheduled print -> Deduplicated (no repeated alert)
+const test17 = evaluateTestBooking(
+  'unregistered_print.gcode',
+  [],
+  new Date(now.getTime() + 30000), // 30s later (still in grace)
+  0.65,
+  {
+    isPrinting: true,
+    stateStore: testStateStore,
+    simulateGrace: true,
+  }
+);
+console.log(
+  'Test 17 (Subsequent cycle with same unscheduled print -> Deduplicated alert):',
+  test17.action === 'grace_period' && test17.initialAlertSent === true && test17.justSentInitialAlert === false
+    ? 'PASSED ✅'
+    : 'FAILED ❌',
+  test17
+);
+
+// Test 18: Unscheduled print grace period expires -> Policy enforcement action with alert status intact
+const test18 = evaluateTestBooking(
+  'unregistered_print.gcode',
+  [],
+  new Date(now.getTime() + 70000), // 70s later (> 60s grace)
+  0.65,
+  {
+    isPrinting: true,
+    stateStore: testStateStore,
+    simulateGrace: true,
+  }
+);
+console.log(
+  'Test 18 (Unscheduled print grace expired -> Rogue enforcement action):',
+  test18.action === 'rogue_unscheduled' && test18.enforcementAction === 'cancel' && test18.initialAlertSent === true
+    ? 'PASSED ✅'
+    : 'FAILED ❌',
+  test18
+);
+
+// Test 19: Printer becomes IDLE/Authorized -> Clears tracking, so next unscheduled print triggers fresh alert
+evaluateTestBooking(
+  '',
+  [],
+  new Date(now.getTime() + 80000),
+  0.65,
+  {
+    isPrinting: false,
+    stateStore: testStateStore,
+  }
+);
+const test19 = evaluateTestBooking(
+  'new_unscheduled_part.gcode',
+  [],
+  new Date(now.getTime() + 90000),
+  0.65,
+  {
+    isPrinting: true,
+    stateStore: testStateStore,
+    simulateGrace: true,
+  }
+);
+console.log(
+  'Test 19 (State cleared on idle/authorized -> Next unscheduled print triggers fresh alert):',
+  test19.action === 'grace_period' && test19.initialAlertSent === true && test19.justSentInitialAlert === true
+    ? 'PASSED ✅'
+    : 'FAILED ❌',
+  test19
+);
+
+console.log('\n🎉 ALL EARLY-ARRIVAL, DURATION, POLICY TOGGLE, EARLY-FINISH, PAUSE & UNSCHEDULED ALERT TESTS COMPLETED SUCCESSFULLY!\n');
+
 
 

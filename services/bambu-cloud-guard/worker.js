@@ -31,6 +31,7 @@ const SYNC_BACKUP_TOPIC = 'https://ntfy.sh/uiuc_bambu_x1c_sync_v4';
 let guardState = {
   unscheduledFirstSeenAt: null,
   stoppedRogueAlertSent: false,
+  unscheduledInitialAlertSent: null,
   mismatchAlertSent: false,
   wasPrinting: false,
   lastEvaluatedAt: null,
@@ -340,7 +341,10 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
   const dryRun = isP1s ? false : true;
   const graceMinutes = guardConfig.gracePeriodMinutes || 1; // default: 1 minute
   const similarityThreshold = guardConfig.similarityThreshold || 0.65;
-  const recipients = guardConfig.alertRecipients || [DEFAULT_CONFIG.superAdminEmail];
+  const recipients = Array.from(new Set([
+    ...(guardConfig.alertRecipients || []),
+    DEFAULT_CONFIG.superAdminEmail
+  ])).filter(Boolean);
   const resendApiKey = guardConfig.resendApiKey || env.RESEND_API_KEY || '';
   const unscheduledPrintAction = guardConfig.unscheduledPrintAction || 'cancel';
   const fileMismatchAction = guardConfig.fileMismatchAction || 'pause';
@@ -424,6 +428,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
   // If printer is IDLE or FINISH, clear tracking timers and evaluate Early Finish Detection
   if (!isPrinting) {
     await deleteStoredState(env, `${stateKeyPrefix}unscheduledFirstSeenAt`);
+    await deleteStoredState(env, `${stateKeyPrefix}unscheduledInitialAlertSent`);
     await deleteStoredState(env, `${stateKeyPrefix}stoppedRogueAlertSent`);
     await deleteStoredState(env, `${stateKeyPrefix}mismatchAlertSent`);
 
@@ -619,6 +624,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
 
     // Authorized Print Match! Clear rogue timers and auto-start booking on portal if not yet in_progress
     await deleteStoredState(env, `${stateKeyPrefix}unscheduledFirstSeenAt`);
+    await deleteStoredState(env, `${stateKeyPrefix}unscheduledInitialAlertSent`);
     await deleteStoredState(env, `${stateKeyPrefix}stoppedRogueAlertSent`);
 
     let autoStarted = false;
@@ -671,6 +677,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
   if (earlyMatch) {
     // Student arrived early for their upcoming reservation! DO NOT CANCEL!
     await deleteStoredState(env, `${stateKeyPrefix}unscheduledFirstSeenAt`);
+    await deleteStoredState(env, `${stateKeyPrefix}unscheduledInitialAlertSent`);
     await deleteStoredState(env, `${stateKeyPrefix}stoppedRogueAlertSent`);
 
     let autoStarted = false;
@@ -731,6 +738,32 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
   const graceMs = graceMinutes * 60 * 1000;
   const graceRemainingSec = Math.max(0, Math.round((graceMs - elapsedMs) / 1000));
 
+  // --- IMMEDIATE ALERT ON DETECTION ---
+  // Send email alert immediately upon first detection of an unscheduled print (before or during grace period)
+  const initialAlertSent = await getStoredState(env, `${stateKeyPrefix}unscheduledInitialAlertSent`, null);
+  let justSentInitialAlert = false;
+  if (!initialAlertSent || initialAlertSent !== currentFile) {
+    await sendGuardAlert({
+      recipients,
+      subject: `🚨 [ALERT] Unscheduled Print Detected: "${currentFile}" on ${isP1s ? 'P1S' : 'X1C'}`,
+      title: `Unscheduled Print Detected: "${currentFile}" (${isP1s ? 'P1S Sandbox' : 'X1C Lab'})`,
+      severity: 'warning',
+      message: `A print was started on ${isP1s ? 'Bambu Lab P1S' : 'Bambu Lab X1-Carbon'} without an active reservation in the portal queue.\n\n• Sliced File: "${currentFile}"\n• Current Status: ${state} (${printerStatus.mc_percent || 0}% complete)\n• First Detected: ${new Date(firstSeen).toLocaleTimeString()}\n• Grace Period: ${graceMinutes} minute(s) remaining for reservation or check-in.\n\n${dryRun ? '⚠️ [DRY RUN] Guard is in monitoring mode. Real prints are not canceled.' : `If no matching reservation is found after ${graceMinutes} minute(s), the printer will be automatically ${unscheduledPrintAction.toUpperCase()}ed.`}`,
+      printerInfo: {
+        serialNumber,
+        fileName: currentFile,
+        state,
+        progress: printerStatus.mc_percent,
+        remainingTime: printerStatus.mc_remaining_time
+      },
+      resendApiKey,
+      dryRun
+    });
+
+    await setStoredState(env, `${stateKeyPrefix}unscheduledInitialAlertSent`, currentFile);
+    justSentInitialAlert = true;
+  }
+
   if (elapsedMs < graceMs) {
     return {
       status: 'grace_period',
@@ -739,9 +772,11 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
       serialNumber,
       dryRun,
       currentFile,
+      initialAlertSent: true,
+      justSentInitialAlert,
       elapsedSeconds: Math.round(elapsedMs / 1000),
       graceRemainingSec,
-      message: `Unscheduled print detected on ${isP1s ? 'P1S Sandbox' : 'X1C Lab'}. Waiting ${graceMinutes}-min grace period (${graceRemainingSec}s remaining).`,
+      message: `Unscheduled print detected on ${isP1s ? 'P1S Sandbox' : 'X1C Lab'}. Immediate alert sent to ${recipients.join(', ')}. Waiting ${graceMinutes}-min grace period (${graceRemainingSec}s remaining).`,
       p1sLight: p1sLightReport
     };
   }
@@ -785,6 +820,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
     serialNumber,
     dryRun,
     currentFile,
+    initialAlertSent: true,
     elapsedMinutes: Math.round(elapsedMs / 60000),
     p1sLight: p1sLightReport
   };
