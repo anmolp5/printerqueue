@@ -22,6 +22,7 @@ const DEFAULT_CONFIG = {
   p1sSerialNumber: '01P00C611402117',
   superAdminEmail: 'anmolp5@illinois.edu',
   cloudSettingsUrl: 'https://api.restful-api.dev/objects/ff808181a09d98f701a117663a7a18ed',
+  resendApiKey: '',
 };
 
 // Shared cloud sync topic (unlimited, zero-rate-limit persistent cache)
@@ -373,7 +374,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
     ...(guardConfig.alertRecipients || []),
     DEFAULT_CONFIG.superAdminEmail
   ])).filter(Boolean);
-  const resendApiKey = guardConfig.resendApiKey || env.RESEND_API_KEY || '';
+  const resendApiKey = guardConfig.resendApiKey || env.RESEND_API_KEY || DEFAULT_CONFIG.resendApiKey || '';
   const unscheduledPrintAction = guardConfig.unscheduledPrintAction || 'cancel';
   const fileMismatchAction = guardConfig.fileMismatchAction || 'pause';
   const durationExceededAction = guardConfig.durationExceededAction || 'pause';

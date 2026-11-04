@@ -211,7 +211,7 @@ export function createDefaultAdminSettings(): AdminSettings {
       gracePeriodMinutes: 1,
       similarityThreshold: 0.65,
       alertRecipients: [SUPER_ADMIN_EMAIL],
-      resendApiKey: "",
+      resendApiKey: process.env.RESEND_API_KEY || "",
       dryRun: true,
       unscheduledPrintAction: "cancel",
       fileMismatchAction: "pause",
