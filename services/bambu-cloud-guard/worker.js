@@ -22,6 +22,7 @@ const DEFAULT_CONFIG = {
   p1sSerialNumber: '01P00C611402117',
   superAdminEmail: 'anmolp5@illinois.edu',
   cloudSettingsUrl: 'https://api.restful-api.dev/objects/ff808181a09d98f701a117663a7a18ed',
+  cloudStateUrl: 'https://api.restful-api.dev/objects/ff808181a09d98f701a1a85f818438cb',
   resendApiKey: '',
 };
 
@@ -43,41 +44,64 @@ let guardState = {
   lastSettingsUpdated: null,
 };
 
-// State management helpers (backed by GUARD_KV + in-memory cache)
+// Shared runtime state cache for cross-isolate sync (0 Cloudflare KV operations)
+let runtimeStateCache = null;
+let runtimeStateLastFetched = 0;
+
+/**
+ * Resolves state value, checking memory first, then cross-isolate cloud object (0 KV calls)
+ */
 async function getStoredState(env, key, fallback = null) {
   if (guardState[key] !== undefined && guardState[key] !== null) {
     return guardState[key];
   }
-  if (env?.GUARD_KV) {
+
+  // If memory is cold, fetch once from persistent cloud state object
+  const stateUrl = env?.CLOUD_STATE_URL || DEFAULT_CONFIG.cloudStateUrl;
+  if (stateUrl && (Date.now() - runtimeStateLastFetched > 15000)) {
     try {
-      const val = await env.GUARD_KV.get(key);
-      if (val !== null && val !== undefined) {
-        guardState[key] = val;
-        return val;
+      const res = await fetch(stateUrl, { headers: { 'Cache-Control': 'no-cache' } });
+      if (res.ok) {
+        const json = await res.json();
+        if (json?.data) {
+          runtimeStateCache = json.data;
+          runtimeStateLastFetched = Date.now();
+          for (const [k, v] of Object.entries(json.data)) {
+            if (guardState[k] === undefined || guardState[k] === null) {
+              guardState[k] = v;
+            }
+          }
+        }
       }
     } catch (e) {
-      // ignore
+      // ignore network hiccup
     }
   }
-  return fallback;
+
+  return (guardState[key] !== undefined && guardState[key] !== null) ? guardState[key] : fallback;
 }
 
+/**
+ * Updates stored state in memory and persists to cloud state object only if changed (0 KV calls)
+ */
 async function setStoredState(env, key, val) {
-  guardState[key] = val;
-  if (env?.GUARD_KV) {
-    try {
-      await env.GUARD_KV.put(key, String(val));
-    } catch (e) {
-      // ignore
-    }
+  if (guardState[key] === val) {
+    return; // Already current, no-op
   }
-}
+  guardState[key] = val;
 
-async function deleteStoredState(env, key) {
-  guardState[key] = null;
-  if (env?.GUARD_KV) {
+  const stateUrl = env?.CLOUD_STATE_URL || DEFAULT_CONFIG.cloudStateUrl;
+  if (stateUrl) {
+    runtimeStateCache = { ...(runtimeStateCache || {}), [key]: val };
     try {
-      await env.GUARD_KV.delete(key);
+      await fetch(stateUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'bambu_guard_runtime_state',
+          data: runtimeStateCache,
+        }),
+      });
     } catch (e) {
       // ignore
     }
@@ -85,37 +109,38 @@ async function deleteStoredState(env, key) {
 }
 
 /**
- * Restores bookings and settings from persistent Cloudflare KV backup if worker memory was cleared
+ * Clears stored state in memory and updates cloud state object only if value was non-null (0 KV calls)
+ */
+async function deleteStoredState(env, key) {
+  if (guardState[key] === null || guardState[key] === undefined) {
+    return; // Already null/clean, 0 network calls!
+  }
+  guardState[key] = null;
+
+  const stateUrl = env?.CLOUD_STATE_URL || DEFAULT_CONFIG.cloudStateUrl;
+  if (stateUrl) {
+    runtimeStateCache = { ...(runtimeStateCache || {}), [key]: null };
+    try {
+      await fetch(stateUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'bambu_guard_runtime_state',
+          data: runtimeStateCache,
+        }),
+      });
+    } catch (e) {
+      // ignore
+    }
+  }
+}
+
+/**
+ * Restores bookings and settings from persistent backup if worker memory was cleared
  */
 async function loadBackupData(env, force = false) {
-  if ((guardState.x1cBookings.length === 0 || force) && env?.GUARD_KV) {
-    try {
-      const raw = await env.GUARD_KV.get('x1c_bookings');
-      if (raw) {
-        const stored = JSON.parse(raw);
-        if (Array.isArray(stored)) {
-          guardState.x1cBookings = stored;
-          guardState.lastBookingsUpdated = new Date().toISOString();
-        }
-      }
-    } catch (e) {
-      console.warn('[KV Load Bookings Error]', e.message);
-    }
-  }
-  if ((!guardState.adminSettings || force) && env?.GUARD_KV) {
-    try {
-      const rawSettings = await env.GUARD_KV.get('admin_settings');
-      if (rawSettings) {
-        guardState.adminSettings = JSON.parse(rawSettings);
-        guardState.lastSettingsUpdated = new Date().toISOString();
-      }
-    } catch (e) {
-      console.warn('[KV Load Settings Error]', e.message);
-    }
-  }
-
   // Fallback to ntfy persistent backup with &since=all
-  if (guardState.x1cBookings.length === 0 || !guardState.adminSettings) {
+  if (guardState.x1cBookings.length === 0 || !guardState.adminSettings || force) {
     try {
       const res = await fetch(`${SYNC_BACKUP_TOPIC}/json?poll=1&since=all`, { cache: 'no-store' });
       if (res.ok) {
@@ -126,11 +151,11 @@ async function loadBackupData(env, force = false) {
             const ev = JSON.parse(lines[i]);
             if (ev.event === 'message' && ev.message) {
               const parsed = JSON.parse(ev.message);
-              if (Array.isArray(parsed.bookings) && guardState.x1cBookings.length === 0) {
+              if (Array.isArray(parsed.bookings) && (guardState.x1cBookings.length === 0 || force)) {
                 guardState.x1cBookings = parsed.bookings;
                 guardState.lastBookingsUpdated = parsed.updatedAt;
               }
-              if (parsed.settings && !guardState.adminSettings) {
+              if (parsed.settings && (!guardState.adminSettings || force)) {
                 guardState.adminSettings = parsed.settings;
                 guardState.lastSettingsUpdated = parsed.updatedAt;
               }
@@ -147,21 +172,10 @@ async function loadBackupData(env, force = false) {
 }
 
 /**
- * Persists bookings/settings snapshot to Cloudflare KV and secondary backup
+ * Persists bookings/settings snapshot to secondary backup (0 KV calls)
  */
 async function persistBackupData(env, data) {
-  if (env?.GUARD_KV) {
-    try {
-      if (data.bookings) {
-        await env.GUARD_KV.put('x1c_bookings', JSON.stringify(data.bookings));
-      }
-      if (data.settings) {
-        await env.GUARD_KV.put('admin_settings', JSON.stringify(data.settings));
-      }
-    } catch (e) {
-      console.warn('[KV Persist Error]', e.message);
-    }
-  }
+
 
   try {
     const jsonStr = JSON.stringify(data);
