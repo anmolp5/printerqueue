@@ -97,6 +97,9 @@ export async function sendGuardAlert(params) {
     } catch (e) {
       results.errors.push(`Email delivery failed: ${e.message}`);
     }
+  } else {
+    results.errors.push('No Resend API Key configured: unable to send email to ' + recipients.join(', '));
+    console.warn('[Bambu Guard Notifier] Resend API Key missing. Skipping email dispatch. (Push notification will still be sent to ntfy.sh)');
   }
 
   // 2. Dispatch push notification to ntfy.sh topic (always works, 100% free)

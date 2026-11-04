@@ -42,17 +42,45 @@ let guardState = {
   lastSettingsUpdated: null,
 };
 
-// State management helpers (zero-cost, eliminates all KV write/delete quotas)
+// State management helpers (backed by GUARD_KV + in-memory cache)
 async function getStoredState(env, key, fallback = null) {
-  return guardState[key] ?? fallback;
+  if (guardState[key] !== undefined && guardState[key] !== null) {
+    return guardState[key];
+  }
+  if (env?.GUARD_KV) {
+    try {
+      const val = await env.GUARD_KV.get(key);
+      if (val !== null && val !== undefined) {
+        guardState[key] = val;
+        return val;
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+  return fallback;
 }
 
 async function setStoredState(env, key, val) {
   guardState[key] = val;
+  if (env?.GUARD_KV) {
+    try {
+      await env.GUARD_KV.put(key, String(val));
+    } catch (e) {
+      // ignore
+    }
+  }
 }
 
 async function deleteStoredState(env, key) {
   guardState[key] = null;
+  if (env?.GUARD_KV) {
+    try {
+      await env.GUARD_KV.delete(key);
+    } catch (e) {
+      // ignore
+    }
+  }
 }
 
 /**
