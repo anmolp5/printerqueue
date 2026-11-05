@@ -153,29 +153,57 @@ async function deleteStoredState(env, key) {
 }
 
 /**
- * Restores bookings and settings from persistent backup if worker memory was cleared
+ * Restores bookings and settings from persistent Cloudflare KV backup (and ntfy secondary fallback)
  */
 async function loadBackupData(env, force = false) {
-  // Fallback to ntfy persistent backup with &since=all
-  if (guardState.x1cBookings.length === 0 || !guardState.adminSettings || force) {
+  // 1. Primary: Cloudflare KV (fast, persistent, unlimited size, across all isolates)
+  if (env?.GUARD_KV) {
+    try {
+      const kvData = await env.GUARD_KV.get('shared_master_bookings', 'json');
+      if (kvData && Array.isArray(kvData.bookings) && (guardState.x1cBookings.length === 0 || force)) {
+        guardState.x1cBookings = kvData.bookings;
+        guardState.lastBookingsUpdated = kvData.updatedAt || new Date().toISOString();
+      }
+    } catch (e) {
+      console.warn('[Guard KV Bookings Read Error]', e.message || e);
+    }
+
+    try {
+      const kvSettings = await env.GUARD_KV.get('shared_admin_settings', 'json');
+      if (kvSettings && (!guardState.adminSettings || force)) {
+        guardState.adminSettings = kvSettings;
+        guardState.lastSettingsUpdated = new Date().toISOString();
+      }
+    } catch (e) {
+      console.warn('[Guard KV Settings Read Error]', e.message || e);
+    }
+  }
+
+  // 2. Secondary fallback: ntfy backup (if KV has no bookings or force)
+  if (guardState.x1cBookings.length === 0 || !guardState.adminSettings) {
     try {
       const res = await fetch(`${SYNC_BACKUP_TOPIC}/json?poll=1&since=all`, { cache: 'no-store' });
       if (res.ok) {
         const text = await res.text();
         const lines = text.trim().split('\n').filter(Boolean);
+        let foundBookings = guardState.x1cBookings.length > 0;
+        let foundSettings = Boolean(guardState.adminSettings);
         for (let i = lines.length - 1; i >= 0; i--) {
           try {
             const ev = JSON.parse(lines[i]);
             if (ev.event === 'message' && ev.message) {
               const parsed = JSON.parse(ev.message);
-              if (Array.isArray(parsed.bookings) && (guardState.x1cBookings.length === 0 || force)) {
+              if (Array.isArray(parsed.bookings) && !foundBookings && guardState.x1cBookings.length === 0) {
                 guardState.x1cBookings = parsed.bookings;
                 guardState.lastBookingsUpdated = parsed.updatedAt;
+                foundBookings = true;
               }
-              if (parsed.settings && (!guardState.adminSettings || force)) {
+              if (parsed.settings && !foundSettings && !guardState.adminSettings) {
                 guardState.adminSettings = parsed.settings;
                 guardState.lastSettingsUpdated = parsed.updatedAt;
+                foundSettings = true;
               }
+              if (foundBookings && foundSettings) break;
             }
           } catch (e) {
             // ignore malformed line
@@ -189,11 +217,27 @@ async function loadBackupData(env, force = false) {
 }
 
 /**
- * Persists bookings/settings snapshot to secondary backup (0 KV calls)
+ * Persists bookings/settings snapshot to Cloudflare KV and secondary backup
  */
 async function persistBackupData(env, data) {
+  // 1. Primary: Cloudflare KV (reliable edge persistence, 0 deletes, shared across all devices)
+  if (env?.GUARD_KV) {
+    try {
+      if (Array.isArray(data?.bookings)) {
+        await env.GUARD_KV.put('shared_master_bookings', JSON.stringify({
+          bookings: data.bookings,
+          updatedAt: data.updatedAt || new Date().toISOString()
+        }));
+      }
+      if (data?.settings) {
+        await env.GUARD_KV.put('shared_admin_settings', JSON.stringify(data.settings));
+      }
+    } catch (e) {
+      console.warn('[Guard KV Persist Error]', e.message || e);
+    }
+  }
 
-
+  // 2. Secondary fallback: ntfy backup (only if under 4000 byte limit)
   try {
     const jsonStr = JSON.stringify(data);
     if (jsonStr.length < 4000) {
@@ -1165,6 +1209,7 @@ export default {
       try {
         const body = await request.json();
         const incoming = Array.isArray(body?.bookings) ? body.bookings : (Array.isArray(body) ? body : []);
+        await loadBackupData(env, true);
         if (body?.replace === true) {
           guardState.x1cBookings = incoming;
         } else {

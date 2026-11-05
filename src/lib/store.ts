@@ -238,8 +238,15 @@ export async function fetchBookings(): Promise<CalendarBooking[]> {
       .order("start_time", { ascending: true });
     if (!error && data) return data as CalendarBooking[];
   }
-  // Trigger cloud sync in background
-  syncBookingsFromCloud().catch(() => {});
+  // Await cloud sync so cross-device bookings (e.g. created on phone, viewed on laptop) load immediately
+  try {
+    const synced = await syncBookingsFromCloud();
+    if (synced && synced.length > 0) {
+      return synced;
+    }
+  } catch {
+    // fallback to local bookings if network offline
+  }
   return getLocalBookings();
 }
 
