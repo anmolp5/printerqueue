@@ -27,11 +27,15 @@ import {
   Play,
   XCircle,
   Bell,
+  BellOff,
   Crown,
   Sparkles,
   Wrench,
   Clock,
   FileSpreadsheet,
+  FileWarning,
+  PauseCircle,
+  UserCheck,
 } from "lucide-react";
 import { useUserSession } from "@/hooks/useUserSession";
 import {
@@ -67,6 +71,7 @@ import {
 import { AdminBookingModal } from "@/components/AdminBookingModal";
 import {
   AdminSettings,
+  BambuGuardNotificationsConfig,
   BookingStatus,
   CalendarBooking,
   DispatchedEmail,
@@ -666,6 +671,97 @@ export default function AdminDashboardPage() {
       },
     };
     commitSettings(next, `Updated Bambu Guard policy: ${key} -> ${action}`);
+  };
+
+  const handleToggleGuardNotification = (
+    key: keyof BambuGuardNotificationsConfig
+  ) => {
+    const currentNotifications: BambuGuardNotificationsConfig = {
+      all: true,
+      unscheduledPrint: true,
+      fileMismatch: true,
+      durationExceeded: true,
+      printPaused: true,
+      earlyStart: true,
+      enforcement: true,
+      ...(settings.bambuGuard?.notifications || {}),
+    };
+
+    const newVal = !currentNotifications[key];
+    const updatedNotifications: BambuGuardNotificationsConfig = {
+      ...currentNotifications,
+      [key]: newVal,
+    };
+
+    const templateMapping: Record<string, EmailNotificationType[]> = {
+      unscheduledPrint: ["guard_unscheduled_detected", "guard_unscheduled_followup"],
+      fileMismatch: ["guard_file_mismatch"],
+      durationExceeded: ["guard_duration_exceeded"],
+      printPaused: ["guard_print_paused"],
+      earlyStart: ["guard_early_start"],
+      enforcement: ["guard_unscheduled_enforced"],
+    };
+
+    const updatedEmailTemplates = { ...settings.emailTemplates };
+    if (key === "all") {
+      Object.keys(templateMapping).forEach((k) => {
+        updatedNotifications[k as keyof BambuGuardNotificationsConfig] = newVal;
+      });
+      Object.values(templateMapping).flat().forEach((tplKey) => {
+        if (updatedEmailTemplates[tplKey]) {
+          updatedEmailTemplates[tplKey] = {
+            ...updatedEmailTemplates[tplKey],
+            enabled: newVal,
+          };
+        }
+      });
+    } else if (templateMapping[key]) {
+      templateMapping[key].forEach((tplKey) => {
+        if (updatedEmailTemplates[tplKey]) {
+          updatedEmailTemplates[tplKey] = {
+            ...updatedEmailTemplates[tplKey],
+            enabled: newVal,
+          };
+        }
+      });
+      if (newVal) {
+        updatedNotifications.all = true;
+      }
+    }
+
+    const next: AdminSettings = {
+      ...settings,
+      bambuGuard: {
+        ...(settings.bambuGuard || {
+          enabled: true,
+          gracePeriodMinutes: 1,
+          similarityThreshold: 0.65,
+          alertRecipients: [SUPER_ADMIN_EMAIL],
+          resendApiKey: "",
+          dryRun: true,
+          unscheduledPrintAction: "cancel",
+          fileMismatchAction: "pause",
+          durationExceededAction: "pause",
+        }),
+        notifications: updatedNotifications,
+      },
+      emailTemplates: updatedEmailTemplates,
+    };
+
+    const labelMap: Record<string, string> = {
+      all: "All Guard Notifications",
+      unscheduledPrint: "Unscheduled Print Alerts",
+      fileMismatch: "File Mismatch Alerts",
+      durationExceeded: "Duration Exceeded Alerts",
+      printPaused: "Printer Paused Alerts",
+      earlyStart: "Early Arrival Authorized Alerts",
+      enforcement: "Grace Period Enforcement Alerts",
+    };
+
+    commitSettings(
+      next,
+      `${labelMap[key] || key} ${newVal ? "enabled" : "muted"}.`
+    );
   };
 
   const handleRunDiagnostic = async () => {
@@ -1800,20 +1896,51 @@ export default function AdminDashboardPage() {
                         type="checkbox"
                         checked={activeTemplateConfig.enabled}
                         onChange={(e) => {
+                          const isEnabled = e.target.checked;
+                          const emailToGuardNotifMap: Record<string, keyof BambuGuardNotificationsConfig> = {
+                            guard_unscheduled_detected: "unscheduledPrint",
+                            guard_unscheduled_followup: "unscheduledPrint",
+                            guard_file_mismatch: "fileMismatch",
+                            guard_duration_exceeded: "durationExceeded",
+                            guard_print_paused: "printPaused",
+                            guard_early_start: "earlyStart",
+                            guard_unscheduled_enforced: "enforcement",
+                          };
+
+                          const guardNotifKey = emailToGuardNotifMap[selectedTemplateType];
+                          const updatedGuard = { ...(settings.bambuGuard || {}) };
+                          if (guardNotifKey) {
+                            updatedGuard.notifications = {
+                              all: true,
+                              unscheduledPrint: true,
+                              fileMismatch: true,
+                              durationExceeded: true,
+                              printPaused: true,
+                              earlyStart: true,
+                              enforcement: true,
+                              ...(updatedGuard.notifications || {}),
+                              [guardNotifKey]: isEnabled,
+                            };
+                            if (isEnabled) {
+                              updatedGuard.notifications.all = true;
+                            }
+                          }
+
                           const next: AdminSettings = {
                             ...settings,
+                            bambuGuard: updatedGuard as any,
                             emailTemplates: {
                               ...settings.emailTemplates,
                               [selectedTemplateType]: {
                                 ...activeTemplateConfig,
-                                enabled: e.target.checked,
+                                enabled: isEnabled,
                               },
                             },
                           };
                           commitSettings(
                             next,
                             `${EMAIL_TEMPLATE_META[selectedTemplateType].label} emails ${
-                              e.target.checked ? "enabled" : "disabled"
+                              isEnabled ? "enabled" : "disabled"
                             }.`
                           );
                         }}
@@ -2102,92 +2229,329 @@ export default function AdminDashboardPage() {
 
             {/* Guard Settings Grid */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* Card 1: Alert Recipients Roster */}
-              <div className="bg-white rounded-xl border border-zinc-200 shadow-2xs p-5 space-y-4">
-                <div>
-                  <h3 className="text-sm font-bold text-zinc-900 flex items-center gap-2">
-                    <Bell className="w-4 h-4 text-[#FF5F05]" />
-                    Security Alert Recipients
-                  </h3>
-                  <p className="text-xs text-zinc-500 mt-1">
-                    Emails that automatically receive notifications when unscheduled prints or file mismatches are detected.
-                  </p>
-                </div>
+              {/* Column 1: Alert Recipients & Notification Controls */}
+              <div className="space-y-6">
+                {/* Card 1: Alert Recipients Roster */}
+                <div className="bg-white rounded-xl border border-zinc-200 shadow-2xs p-5 space-y-4">
+                  <div>
+                    <h3 className="text-sm font-bold text-zinc-900 flex items-center gap-2">
+                      <Bell className="w-4 h-4 text-[#FF5F05]" />
+                      Security Alert Recipients
+                    </h3>
+                    <p className="text-xs text-zinc-500 mt-1">
+                      Emails that automatically receive notifications when unscheduled prints or file mismatches are detected.
+                    </p>
+                  </div>
 
-                {/* Recipient list */}
-                <div className="space-y-2">
-                  {(settings.bambuGuard?.alertRecipients || [SUPER_ADMIN_EMAIL]).map((email) => {
-                    const isSuper = email.toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase();
-                    return (
-                      <div
-                        key={email}
-                        className="flex items-center justify-between p-2.5 rounded-lg bg-zinc-50 border border-zinc-200/80 text-xs"
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium text-zinc-800">{email}</span>
-                          {isSuper && (
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 border border-blue-200 flex items-center gap-1">
-                              <Crown className="w-3 h-3" />
-                              Super Admin
-                            </span>
+                  {/* Recipient list */}
+                  <div className="space-y-2">
+                    {(settings.bambuGuard?.alertRecipients || [SUPER_ADMIN_EMAIL]).map((email) => {
+                      const isSuper = email.toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase();
+                      return (
+                        <div
+                          key={email}
+                          className="flex items-center justify-between p-2.5 rounded-lg bg-zinc-50 border border-zinc-200/80 text-xs"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium text-zinc-800">{email}</span>
+                            {isSuper && (
+                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 border border-blue-200 flex items-center gap-1">
+                                <Crown className="w-3 h-3" />
+                                Super Admin
+                              </span>
+                            )}
+                          </div>
+
+                          {!isSuper && (
+                            <button
+                              onClick={() => handleRemoveGuardRecipient(email)}
+                              className="text-zinc-400 hover:text-red-600 transition-colors p-1 cursor-pointer"
+                              title="Remove recipient"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
                           )}
                         </div>
+                      );
+                    })}
+                  </div>
 
-                        {!isSuper && (
-                          <button
-                            onClick={() => handleRemoveGuardRecipient(email)}
-                            className="text-zinc-400 hover:text-red-600 transition-colors p-1 cursor-pointer"
-                            title="Remove recipient"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        )}
-                      </div>
-                    );
-                  })}
+                  {/* Add new recipient input */}
+                  <form onSubmit={handleAddGuardRecipient} className="flex gap-2 pt-2">
+                    <input
+                      type="email"
+                      value={newGuardRecipient}
+                      onChange={(e) => setNewGuardRecipient(e.target.value)}
+                      placeholder="student_assistant@illinois.edu"
+                      className="flex-1 px-3 py-2 rounded-lg border border-zinc-300 text-xs bg-white focus:outline-hidden focus:ring-2 focus:ring-[#13294B]/20 focus:border-[#13294B]"
+                    />
+                    <button
+                      type="submit"
+                      className="px-3.5 py-2 rounded-lg bg-zinc-900 hover:bg-black text-white text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Add</span>
+                    </button>
+                  </form>
+
+                  {/* Resend API Key Configuration */}
+                  <div className="pt-4 border-t border-zinc-100 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-bold text-zinc-700">Resend API Key for Cloud Email</label>
+                      <a
+                        href="https://resend.com/api-keys"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[11px] text-[#FF5F05] hover:underline font-medium"
+                      >
+                        Get Free Key (3,000/mo) &rarr;
+                      </a>
+                    </div>
+                    <input
+                      type="password"
+                      defaultValue={settings.bambuGuard?.resendApiKey || ""}
+                      onBlur={(e) => handleUpdateGuardResendKey(e.target.value)}
+                      placeholder="re_123456789..."
+                      className="w-full px-3 py-2 rounded-lg border border-zinc-300 text-xs bg-white font-mono focus:outline-hidden focus:ring-2 focus:ring-[#13294B]/20 focus:border-[#13294B]"
+                    />
+                    <p className="text-[11px] text-zinc-400">
+                      Once pasted, this key syncs to the Cloudflare Worker so automated alert emails reach inboxes.
+                    </p>
+                  </div>
                 </div>
 
-                {/* Add new recipient input */}
-                <form onSubmit={handleAddGuardRecipient} className="flex gap-2 pt-2">
-                  <input
-                    type="email"
-                    value={newGuardRecipient}
-                    onChange={(e) => setNewGuardRecipient(e.target.value)}
-                    placeholder="student_assistant@illinois.edu"
-                    className="flex-1 px-3 py-2 rounded-lg border border-zinc-300 text-xs bg-white focus:outline-hidden focus:ring-2 focus:ring-[#13294B]/20 focus:border-[#13294B]"
-                  />
-                  <button
-                    type="submit"
-                    className="px-3.5 py-2 rounded-lg bg-zinc-900 hover:bg-black text-white text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>Add</span>
-                  </button>
-                </form>
-
-                {/* Resend API Key Configuration */}
-                <div className="pt-4 border-t border-zinc-100 space-y-2">
+                {/* Card 3: Individualized Notification Toggles */}
+                <div className="bg-white rounded-xl border border-zinc-200 shadow-2xs p-5 space-y-4">
                   <div className="flex items-center justify-between">
-                    <label className="text-xs font-bold text-zinc-700">Resend API Key for Cloud Email</label>
-                    <a
-                      href="https://resend.com/api-keys"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-[11px] text-[#FF5F05] hover:underline font-medium"
-                    >
-                      Get Free Key (3,000/mo) &rarr;
-                    </a>
+                    <div>
+                      <h3 className="text-sm font-bold text-zinc-900 flex items-center gap-2">
+                        <Bell className="w-4 h-4 text-[#FF5F05]" />
+                        Guard Notification Controls
+                      </h3>
+                      <p className="text-xs text-zinc-500 mt-1">
+                        Turn email notifications on or off individually for each Bambu Guard security event.
+                      </p>
+                    </div>
                   </div>
-                  <input
-                    type="password"
-                    defaultValue={settings.bambuGuard?.resendApiKey || ""}
-                    onBlur={(e) => handleUpdateGuardResendKey(e.target.value)}
-                    placeholder="re_123456789..."
-                    className="w-full px-3 py-2 rounded-lg border border-zinc-300 text-xs bg-white font-mono focus:outline-hidden focus:ring-2 focus:ring-[#13294B]/20 focus:border-[#13294B]"
-                  />
-                  <p className="text-[11px] text-zinc-400">
-                    Once pasted, this key syncs to the Cloudflare Worker so automated alert emails reach inboxes.
-                  </p>
+
+                  {/* Notification Switches */}
+                  {(() => {
+                    const notifs: BambuGuardNotificationsConfig = {
+                      all: true,
+                      unscheduledPrint: true,
+                      fileMismatch: true,
+                      durationExceeded: true,
+                      printPaused: true,
+                      earlyStart: true,
+                      enforcement: true,
+                      ...(settings.bambuGuard?.notifications || {}),
+                    };
+
+                    return (
+                      <div className="space-y-3">
+                        {/* Master Toggle */}
+                        <div className="p-3.5 rounded-lg border border-zinc-200 bg-zinc-50/80 flex items-center justify-between">
+                          <div>
+                            <div className="text-xs font-bold text-zinc-800 flex items-center gap-1.5">
+                              {notifs.all ? (
+                                <Bell className="w-3.5 h-3.5 text-emerald-600" />
+                              ) : (
+                                <BellOff className="w-3.5 h-3.5 text-zinc-400" />
+                              )}
+                              All Guard Notifications (Master)
+                            </div>
+                            <div className="text-[11px] text-zinc-500 mt-0.5">
+                              Mute or unmute all Bambu Guard security emails simultaneously
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleToggleGuardNotification("all")}
+                            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden ${
+                              notifs.all ? "bg-[#13294B]" : "bg-zinc-200"
+                            }`}
+                          >
+                            <span
+                              className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                                notifs.all ? "translate-x-5" : "translate-x-0"
+                              }`}
+                            />
+                          </button>
+                        </div>
+
+                        {/* Individual Alert Toggles */}
+                        <div className="divide-y divide-zinc-100 border border-zinc-200 rounded-lg overflow-hidden bg-white">
+                          {/* 1. Unscheduled Print */}
+                          <div className="p-3 flex items-center justify-between hover:bg-zinc-50/50 transition-colors">
+                            <div className="flex items-start gap-2.5">
+                              <div className="p-1.5 rounded-md bg-amber-50 text-amber-600 mt-0.5">
+                                <AlertTriangle className="w-3.5 h-3.5" />
+                              </div>
+                              <div>
+                                <div className="text-xs font-bold text-zinc-800">Unscheduled / Rogue Print Alerts</div>
+                                <div className="text-[11px] text-zinc-500">
+                                  Dispatched at T+0 and T+10m when printing without a reservation
+                                </div>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleGuardNotification("unscheduledPrint")}
+                              className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden ${
+                                notifs.unscheduledPrint && notifs.all ? "bg-[#13294B]" : "bg-zinc-200"
+                              }`}
+                            >
+                              <span
+                                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                                  notifs.unscheduledPrint && notifs.all ? "translate-x-4" : "translate-x-0"
+                                }`}
+                              />
+                            </button>
+                          </div>
+
+                          {/* 2. File Name Mismatch */}
+                          <div className="p-3 flex items-center justify-between hover:bg-zinc-50/50 transition-colors">
+                            <div className="flex items-start gap-2.5">
+                              <div className="p-1.5 rounded-md bg-rose-50 text-rose-600 mt-0.5">
+                                <FileWarning className="w-3.5 h-3.5" />
+                              </div>
+                              <div>
+                                <div className="text-xs font-bold text-zinc-800">Sliced File Mismatch Alerts</div>
+                                <div className="text-[11px] text-zinc-500">
+                                  Dispatched when print filename differs from reservation (&lt; 65% match)
+                                </div>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleGuardNotification("fileMismatch")}
+                              className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden ${
+                                notifs.fileMismatch && notifs.all ? "bg-[#13294B]" : "bg-zinc-200"
+                              }`}
+                            >
+                              <span
+                                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                                  notifs.fileMismatch && notifs.all ? "translate-x-4" : "translate-x-0"
+                                }`}
+                              />
+                            </button>
+                          </div>
+
+                          {/* 3. Duration Exceeded */}
+                          <div className="p-3 flex items-center justify-between hover:bg-zinc-50/50 transition-colors">
+                            <div className="flex items-start gap-2.5">
+                              <div className="p-1.5 rounded-md bg-purple-50 text-purple-600 mt-0.5">
+                                <Clock className="w-3.5 h-3.5" />
+                              </div>
+                              <div>
+                                <div className="text-xs font-bold text-zinc-800">Duration Overrun Alerts (+15m)</div>
+                                <div className="text-[11px] text-zinc-500">
+                                  Dispatched when print time significantly exceeds the reserved slot
+                                </div>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleGuardNotification("durationExceeded")}
+                              className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden ${
+                                notifs.durationExceeded && notifs.all ? "bg-[#13294B]" : "bg-zinc-200"
+                              }`}
+                            >
+                              <span
+                                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                                  notifs.durationExceeded && notifs.all ? "translate-x-4" : "translate-x-0"
+                                }`}
+                              />
+                            </button>
+                          </div>
+
+                          {/* 4. Printer Paused */}
+                          <div className="p-3 flex items-center justify-between hover:bg-zinc-50/50 transition-colors">
+                            <div className="flex items-start gap-2.5">
+                              <div className="p-1.5 rounded-md bg-amber-50 text-amber-700 mt-0.5">
+                                <PauseCircle className="w-3.5 h-3.5" />
+                              </div>
+                              <div>
+                                <div className="text-xs font-bold text-zinc-800">Printer Paused / Error Alerts</div>
+                                <div className="text-[11px] text-zinc-500">
+                                  Dispatched to student and admins when paused for filament runout or clog
+                                </div>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleGuardNotification("printPaused")}
+                              className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden ${
+                                notifs.printPaused && notifs.all ? "bg-[#13294B]" : "bg-zinc-200"
+                              }`}
+                            >
+                              <span
+                                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                                  notifs.printPaused && notifs.all ? "translate-x-4" : "translate-x-0"
+                                }`}
+                              />
+                            </button>
+                          </div>
+
+                          {/* 5. Early Arrival Authorized */}
+                          <div className="p-3 flex items-center justify-between hover:bg-zinc-50/50 transition-colors">
+                            <div className="flex items-start gap-2.5">
+                              <div className="p-1.5 rounded-md bg-blue-50 text-blue-600 mt-0.5">
+                                <UserCheck className="w-3.5 h-3.5" />
+                              </div>
+                              <div>
+                                <div className="text-xs font-bold text-zinc-800">Early Arrival Authorized Start</div>
+                                <div className="text-[11px] text-zinc-500">
+                                  Dispatched when a student arrives up to 30 minutes early for their slot
+                                </div>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleGuardNotification("earlyStart")}
+                              className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden ${
+                                notifs.earlyStart && notifs.all ? "bg-[#13294B]" : "bg-zinc-200"
+                              }`}
+                            >
+                              <span
+                                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                                  notifs.earlyStart && notifs.all ? "translate-x-4" : "translate-x-0"
+                                }`}
+                              />
+                            </button>
+                          </div>
+
+                          {/* 6. Enforcement Action Executed */}
+                          <div className="p-3 flex items-center justify-between hover:bg-zinc-50/50 transition-colors">
+                            <div className="flex items-start gap-2.5">
+                              <div className="p-1.5 rounded-md bg-red-50 text-red-600 mt-0.5">
+                                <ShieldAlert className="w-3.5 h-3.5" />
+                              </div>
+                              <div>
+                                <div className="text-xs font-bold text-zinc-800">Grace Period Enforcement Alerts</div>
+                                <div className="text-[11px] text-zinc-500">
+                                  Dispatched when an unscheduled print is stopped or paused after grace period
+                                </div>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleGuardNotification("enforcement")}
+                              className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden ${
+                                notifs.enforcement && notifs.all ? "bg-[#13294B]" : "bg-zinc-200"
+                              }`}
+                            >
+                              <span
+                                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                                  notifs.enforcement && notifs.all ? "translate-x-4" : "translate-x-0"
+                                }`}
+                              />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
 
@@ -2268,9 +2632,31 @@ export default function AdminDashboardPage() {
                       <div className="text-xs font-bold text-zinc-800">
                         Unscheduled Print Action
                       </div>
-                      <span className="text-[10px] uppercase font-bold text-zinc-400">
-                        Rogue Job Policy
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleGuardNotification("unscheduledPrint")}
+                          className={`text-[10px] px-2 py-0.5 rounded font-bold flex items-center gap-1 cursor-pointer transition-colors ${
+                            (settings.bambuGuard?.notifications?.unscheduledPrint ?? true) && (settings.bambuGuard?.notifications?.all ?? true)
+                              ? "bg-emerald-100 text-emerald-800 border border-emerald-300 hover:bg-emerald-200"
+                              : "bg-zinc-200 text-zinc-600 border border-zinc-300 hover:bg-zinc-300"
+                          }`}
+                          title="Click to toggle unscheduled print email alerts"
+                        >
+                          {(settings.bambuGuard?.notifications?.unscheduledPrint ?? true) && (settings.bambuGuard?.notifications?.all ?? true) ? (
+                            <>
+                              <Bell className="w-2.5 h-2.5 text-emerald-700" /> Alerts: ON
+                            </>
+                          ) : (
+                            <>
+                              <BellOff className="w-2.5 h-2.5 text-zinc-500" /> Alerts: MUTED
+                            </>
+                          )}
+                        </button>
+                        <span className="text-[10px] uppercase font-bold text-zinc-400">
+                          Rogue Job Policy
+                        </span>
+                      </div>
                     </div>
                     <p className="text-[11px] text-zinc-500">
                       Action taken when a print job begins with no reservation found after the 1-minute grace period.
@@ -2307,9 +2693,31 @@ export default function AdminDashboardPage() {
                       <div className="text-xs font-bold text-zinc-800">
                         File Mismatch Action
                       </div>
-                      <span className="text-[10px] uppercase font-bold text-zinc-400">
-                        Similarity &lt; {Math.round((settings.bambuGuard?.similarityThreshold || 0.65) * 100)}%
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleGuardNotification("fileMismatch")}
+                          className={`text-[10px] px-2 py-0.5 rounded font-bold flex items-center gap-1 cursor-pointer transition-colors ${
+                            (settings.bambuGuard?.notifications?.fileMismatch ?? true) && (settings.bambuGuard?.notifications?.all ?? true)
+                              ? "bg-emerald-100 text-emerald-800 border border-emerald-300 hover:bg-emerald-200"
+                              : "bg-zinc-200 text-zinc-600 border border-zinc-300 hover:bg-zinc-300"
+                          }`}
+                          title="Click to toggle file mismatch email alerts"
+                        >
+                          {(settings.bambuGuard?.notifications?.fileMismatch ?? true) && (settings.bambuGuard?.notifications?.all ?? true) ? (
+                            <>
+                              <Bell className="w-2.5 h-2.5 text-emerald-700" /> Alerts: ON
+                            </>
+                          ) : (
+                            <>
+                              <BellOff className="w-2.5 h-2.5 text-zinc-500" /> Alerts: MUTED
+                            </>
+                          )}
+                        </button>
+                        <span className="text-[10px] uppercase font-bold text-zinc-400">
+                          Similarity &lt; {Math.round((settings.bambuGuard?.similarityThreshold || 0.65) * 100)}%
+                        </span>
+                      </div>
                     </div>
                     <p className="text-[11px] text-zinc-500">
                       Action taken when the physical print filename differs from the reserved booking filename.
@@ -2346,9 +2754,31 @@ export default function AdminDashboardPage() {
                       <div className="text-xs font-bold text-zinc-800">
                         Duration Exceeded Action
                       </div>
-                      <span className="text-[10px] uppercase font-bold text-zinc-400">
-                        Slot Overrun Policy
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleGuardNotification("durationExceeded")}
+                          className={`text-[10px] px-2 py-0.5 rounded font-bold flex items-center gap-1 cursor-pointer transition-colors ${
+                            (settings.bambuGuard?.notifications?.durationExceeded ?? true) && (settings.bambuGuard?.notifications?.all ?? true)
+                              ? "bg-emerald-100 text-emerald-800 border border-emerald-300 hover:bg-emerald-200"
+                              : "bg-zinc-200 text-zinc-600 border border-zinc-300 hover:bg-zinc-300"
+                          }`}
+                          title="Click to toggle duration overrun email alerts"
+                        >
+                          {(settings.bambuGuard?.notifications?.durationExceeded ?? true) && (settings.bambuGuard?.notifications?.all ?? true) ? (
+                            <>
+                              <Bell className="w-2.5 h-2.5 text-emerald-700" /> Alerts: ON
+                            </>
+                          ) : (
+                            <>
+                              <BellOff className="w-2.5 h-2.5 text-zinc-500" /> Alerts: MUTED
+                            </>
+                          )}
+                        </button>
+                        <span className="text-[10px] uppercase font-bold text-zinc-400">
+                          Slot Overrun Policy
+                        </span>
+                      </div>
                     </div>
                     <p className="text-[11px] text-zinc-500">
                       Action taken when an active print job exceeds its scheduled duration into buffer or the next slot.

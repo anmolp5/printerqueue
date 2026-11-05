@@ -113,6 +113,16 @@ export interface AdminLabProfileConfig {
 
 export type GuardViolationAction = 'pause' | 'cancel' | 'none';
 
+export interface BambuGuardNotificationsConfig {
+  all: boolean;
+  unscheduledPrint: boolean;
+  fileMismatch: boolean;
+  durationExceeded: boolean;
+  printPaused: boolean;
+  earlyStart: boolean;
+  enforcement: boolean;
+}
+
 export interface BambuGuardConfig {
   enabled: boolean;
   gracePeriodMinutes: number; // default: 1
@@ -125,6 +135,7 @@ export interface BambuGuardConfig {
   durationExceededAction?: GuardViolationAction;
   p1sSerial?: string;
   autoTurnOffP1sLight?: boolean;
+  notifications?: BambuGuardNotificationsConfig;
 }
 
 export interface AdminSettings {

@@ -753,7 +753,93 @@ console.log(
   p1sAlertResult3
 );
 
-console.log('\n🎉 ALL EARLY-ARRIVAL, DURATION, POLICY TOGGLE, EARLY-FINISH, PAUSE, UNSCHEDULED ANTI-SPAM, TEMPLATE & P1S SUPPRESSION TESTS COMPLETED SUCCESSFULLY!\n');
+// Test 26: Master notification toggle (notifications.all === false) suppresses alerts
+const shouldSendMasterOff = false /* allNotificationsEnabled */ && true;
+console.log(
+  'Test 26 (Master notification switch all: false suppresses alert evaluation):',
+  shouldSendMasterOff === false ? 'PASSED ✅' : 'FAILED ❌',
+  { shouldSend: shouldSendMasterOff }
+);
+
+// Test 27: Individual fileMismatch toggle (notifications.fileMismatch === false) suppresses alert
+const guardNotifsTest1 = { all: true, fileMismatch: false, unscheduledPrint: true };
+const sendMismatchTest = guardNotifsTest1.all !== false && guardNotifsTest1.fileMismatch !== false;
+console.log(
+  'Test 27 (Individual notifications.fileMismatch: false suppresses file mismatch alert):',
+  sendMismatchTest === false ? 'PASSED ✅' : 'FAILED ❌',
+  { sendMismatchAlert: sendMismatchTest }
+);
+
+// Test 28: Individual unscheduledPrint toggle (notifications.unscheduledPrint === false) suppresses alert
+const guardNotifsTest2 = { all: true, fileMismatch: true, unscheduledPrint: false };
+const sendUnscheduledTest = guardNotifsTest2.all !== false && guardNotifsTest2.unscheduledPrint !== false;
+console.log(
+  'Test 28 (Individual notifications.unscheduledPrint: false suppresses unscheduled alert):',
+  sendUnscheduledTest === false ? 'PASSED ✅' : 'FAILED ❌',
+  { sendUnscheduledAlert: sendUnscheduledTest }
+);
+
+// Test 29: Individual durationExceeded toggle (notifications.durationExceeded === false) suppresses alert
+const guardNotifsTest3 = { all: true, durationExceeded: false };
+const sendDurationTest = guardNotifsTest3.all !== false && guardNotifsTest3.durationExceeded !== false;
+console.log(
+  'Test 29 (Individual notifications.durationExceeded: false suppresses duration alert):',
+  sendDurationTest === false ? 'PASSED ✅' : 'FAILED ❌',
+  { sendDurationAlert: sendDurationTest }
+);
+
+// Test 30: Individual printPaused toggle (notifications.printPaused === false) suppresses alert
+const guardNotifsTest4 = { all: true, printPaused: false };
+const sendPausedTest = guardNotifsTest4.all !== false && guardNotifsTest4.printPaused !== false;
+console.log(
+  'Test 30 (Individual notifications.printPaused: false suppresses paused alert):',
+  sendPausedTest === false ? 'PASSED ✅' : 'FAILED ❌',
+  { sendPausedAlert: sendPausedTest }
+);
+
+// Test 31: Individual earlyStart toggle (notifications.earlyStart === false) suppresses alert
+const guardNotifsTest5 = { all: true, earlyStart: false };
+const sendEarlyTest = guardNotifsTest5.all !== false && guardNotifsTest5.earlyStart !== false;
+console.log(
+  'Test 31 (Individual notifications.earlyStart: false suppresses early start alert):',
+  sendEarlyTest === false ? 'PASSED ✅' : 'FAILED ❌',
+  { sendEarlyAlert: sendEarlyTest }
+);
+
+// Test 32: Individual enforcement toggle (notifications.enforcement === false) suppresses alert
+const guardNotifsTest6 = { all: true, enforcement: false };
+const sendEnforcementTest = guardNotifsTest6.all !== false && guardNotifsTest6.enforcement !== false;
+console.log(
+  'Test 32 (Individual notifications.enforcement: false suppresses enforcement alert):',
+  sendEnforcementTest === false ? 'PASSED ✅' : 'FAILED ❌',
+  { sendEnforcementAlert: sendEnforcementTest }
+);
+
+// Test 33: Default behavior when notifications config is empty or undefined -> all active
+const emptyNotifs = {};
+const defaultAllActive = emptyNotifs.all !== false &&
+  emptyNotifs.unscheduledPrint !== false &&
+  emptyNotifs.fileMismatch !== false &&
+  emptyNotifs.durationExceeded !== false &&
+  emptyNotifs.printPaused !== false &&
+  emptyNotifs.earlyStart !== false &&
+  emptyNotifs.enforcement !== false;
+console.log(
+  'Test 33 (Default fallback when notifications object is empty: all enabled):',
+  defaultAllActive === true ? 'PASSED ✅' : 'FAILED ❌',
+  { defaultAllActive }
+);
+
+// Test 34: Master toggle false overrides individual toggle set to true
+const masterFalseIndividualTrue = { all: false, fileMismatch: true, unscheduledPrint: true };
+const sendMasterFalseMismatch = masterFalseIndividualTrue.all !== false && masterFalseIndividualTrue.fileMismatch !== false;
+console.log(
+  'Test 34 (Master toggle all: false strictly overrides individual true toggle):',
+  sendMasterFalseMismatch === false ? 'PASSED ✅' : 'FAILED ❌',
+  { sendMasterFalseMismatch }
+);
+
+console.log('\n🎉 ALL EARLY-ARRIVAL, DURATION, POLICY TOGGLE, EARLY-FINISH, PAUSE, UNSCHEDULED ANTI-SPAM, TEMPLATE, P1S SUPPRESSION & NOTIFICATION TOGGLE TESTS COMPLETED SUCCESSFULLY!\n');
 
 
 

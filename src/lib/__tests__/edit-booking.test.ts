@@ -5,23 +5,29 @@ import { CalendarBooking, UserProfile } from "../types";
 describe("editBooking logic & conflict detection", () => {
   const studentUser: UserProfile = {
     id: "user-student-1",
+    microsoft_oid: "oid-student-1",
     email: "student1@illinois.edu",
     full_name: "Student One",
-    role: "student",
+    role: "user",
+    created_at: new Date().toISOString(),
   };
 
   const otherStudent: UserProfile = {
     id: "user-student-2",
+    microsoft_oid: "oid-student-2",
     email: "student2@illinois.edu",
     full_name: "Student Two",
-    role: "student",
+    role: "user",
+    created_at: new Date().toISOString(),
   };
 
   const adminUser: UserProfile = {
     id: "user-admin-1",
+    microsoft_oid: "oid-admin-1",
     email: "anmolp5@illinois.edu",
     full_name: "Admin User",
     role: "admin",
+    created_at: new Date().toISOString(),
   };
 
   beforeEach(() => {

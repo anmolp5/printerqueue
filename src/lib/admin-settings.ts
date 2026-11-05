@@ -1,11 +1,21 @@
 import {
   AdminSettings,
+  BambuGuardNotificationsConfig,
   EmailNotificationType,
   EmailTemplateConfig,
 } from "./types";
 import { isSupabaseConfigured, supabase } from "./supabase";
 
 export const SUPER_ADMIN_EMAIL = "anmolp5@illinois.edu";
+export const DEFAULT_GUARD_NOTIFICATIONS: BambuGuardNotificationsConfig = {
+  all: true,
+  unscheduledPrint: true,
+  fileMismatch: true,
+  durationExceeded: true,
+  printPaused: true,
+  earlyStart: true,
+  enforcement: true,
+};
 const ADMIN_SETTINGS_STORAGE_KEY = "bambu_x1c_admin_settings_v1";
 
 export const EMAIL_TEMPLATE_META: Record<
@@ -366,6 +376,15 @@ export function createDefaultAdminSettings(): AdminSettings {
       durationExceededAction: "pause",
       p1sSerial: "01P00C611402117",
       autoTurnOffP1sLight: true,
+      notifications: {
+        all: true,
+        unscheduledPrint: true,
+        fileMismatch: true,
+        durationExceeded: true,
+        printPaused: true,
+        earlyStart: true,
+        enforcement: true,
+      },
     },
     updatedAt: new Date().toISOString(),
   };
@@ -470,6 +489,10 @@ function mergePartialAdminSettings(
     bambuGuard: {
       ...defaults.bambuGuard,
       ...(parsed.bambuGuard || {}),
+      notifications: {
+        ...DEFAULT_GUARD_NOTIFICATIONS,
+        ...(parsed.bambuGuard?.notifications || {}),
+      },
       alertRecipients: Array.from(
         new Set([
           SUPER_ADMIN_EMAIL,
@@ -818,6 +841,10 @@ export function importAdminSettingsJson(
       bambuGuard: {
         ...defaults.bambuGuard,
         ...(parsed.bambuGuard || {}),
+        notifications: {
+          ...DEFAULT_GUARD_NOTIFICATIONS,
+          ...(parsed.bambuGuard?.notifications || {}),
+        },
       },
       updatedAt: new Date().toISOString(),
       updatedBy: actorEmail,

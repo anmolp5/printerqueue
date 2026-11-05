@@ -481,6 +481,8 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
   const fileMismatchAction = guardConfig.fileMismatchAction || 'pause';
   const durationExceededAction = guardConfig.durationExceededAction || 'pause';
   const cooldownBufferMinutes = Number(settings?.bookingLimits?.cooldownBufferMinutes ?? 10);
+  const guardNotifications = guardConfig.notifications || {};
+  const allNotificationsEnabled = guardNotifications.all !== false;
 
   if (!enabled) {
     return { status: 'skipped', reason: 'Bambu Guard disabled in admin settings' };
@@ -541,7 +543,11 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
           `The print for student "${candidateBooking.userName || candidateBooking.userEmail}" has PAUSED on the printer.\n\n• Detected Reason: ${errorInfo.reason || 'Printer paused waiting for user intervention'}\n• Reservation: "${candidateBooking.fileName}"\n• Active Window: ${new Date(candidateBooking.startTime).toLocaleTimeString()} - ${new Date(candidateBooking.endTime).toLocaleTimeString()}\n\nYour reservation slot remains ACTIVE on the calendar so you can inspect the printer, fix the issue, and resume your print.`
         );
 
-        if (!isP1s && alertContent) {
+        const sendPausedAlert = allNotificationsEnabled &&
+          guardNotifications.printPaused !== false &&
+          emailTemplates.guard_print_paused?.enabled !== false;
+
+        if (!isP1s && sendPausedAlert && alertContent) {
           await sendGuardAlert({
             recipients: targetRecipients,
             subject: alertContent.subject,
@@ -716,7 +722,11 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
           `A print was started during a reservation for "${activeBooking.userEmail}", but the physical file name does not match the booking:\n\n• Booked File: "${activeBooking.fileName}" (Normalized: "${matchResult.normalizedBooked}")\n• Physical File: "${currentFile}" (Normalized: "${matchResult.normalizedActual}")\n• Similarity Match: ${Math.round(matchResult.score * 100)}% (Minimum required: ${Math.round(similarityThreshold * 100)}%)\n• Action Taken: ${fileMismatchAction.toUpperCase()}\n\n${mismatchTokens.enforcementNote}`
         );
 
-        if (!isP1s && alertContent) {
+        const sendMismatchAlert = allNotificationsEnabled &&
+          guardNotifications.fileMismatch !== false &&
+          emailTemplates.guard_file_mismatch?.enabled !== false;
+
+        if (!isP1s && sendMismatchAlert && alertContent) {
           await sendGuardAlert({
             recipients,
             subject: alertContent.subject,
@@ -791,7 +801,11 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
           `The active print for "${activeBooking.userEmail}" requires more time than remaining in the reservation slot:\n\n• File: "${currentFile}"\n• Estimated Printer Remaining: ${printerRemainingMinutes} minutes\n• Reservation Remaining: ${remainingReservationMinutes} minutes\n• Excess Overrun: ${printerRemainingMinutes - remainingReservationMinutes} minutes (Tolerance: 15m)\n• Action Taken: ${durationExceededAction.toUpperCase()}\n\n${durationTokens.enforcementNote}`
         );
 
-        if (!isP1s && alertContent) {
+        const sendDurationAlert = allNotificationsEnabled &&
+          guardNotifications.durationExceeded !== false &&
+          emailTemplates.guard_duration_exceeded?.enabled !== false;
+
+        if (!isP1s && sendDurationAlert && alertContent) {
           await sendGuardAlert({
             recipients,
             subject: alertContent.subject,
@@ -916,7 +930,11 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
         `Student "${earlyMatch.userName}" (${earlyMatch.userEmail}) arrived up to 30 minutes early for their scheduled slot (${new Date(earlyMatch.startTime).toLocaleTimeString()}).\n\nFile "${currentFile}" matched reservation "${earlyMatch.fileName}" (${Math.round(earlyMatchResult.score * 100)}% match).\n\nBooking status has been automatically updated to IN PROGRESS.`
       );
 
-      if (!isP1s && alertContent) {
+      const sendEarlyAlert = allNotificationsEnabled &&
+        guardNotifications.earlyStart !== false &&
+        emailTemplates.guard_early_start?.enabled !== false;
+
+      if (!isP1s && sendEarlyAlert && alertContent) {
         await sendGuardAlert({
           recipients,
           subject: alertContent.subject,
@@ -996,7 +1014,11 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
       `A print was started on ${printerName} without an active reservation in the portal queue.\n\n• Sliced File: "${currentFile}"\n• Current Status: ${state} (${printerStatus.mc_percent || 0}% complete)\n• First Detected: ${new Date(firstSeen).toLocaleTimeString()}\n• Grace Period: ${graceMinutes} minute(s) remaining for reservation or check-in.\n\n${detectedTokens.enforcementNote}`
     );
 
-    if (!isP1s && alertContent) {
+    const sendUnscheduledAlert = allNotificationsEnabled &&
+      guardNotifications.unscheduledPrint !== false &&
+      emailTemplates.guard_unscheduled_detected?.enabled !== false;
+
+    if (!isP1s && sendUnscheduledAlert && alertContent) {
       await sendGuardAlert({
         recipients,
         subject: alertContent.subject,
@@ -1045,7 +1067,12 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
       `The unscheduled print ("${currentFile}") on ${printerName} has been running for 10 minutes without an active reservation in the queue.\n\n• Sliced File: "${currentFile}"\n• Status: ${state} (${printerStatus.mc_percent || 0}% complete)\n• Started: ${new Date(firstSeen).toLocaleTimeString()}\n• Running Time: 10 minutes\n\n${followUpTokens.enforcementNote}`
     );
 
-    if (!isP1s && followUpContent) {
+    const sendFollowUpAlert = allNotificationsEnabled &&
+      guardNotifications.unscheduledPrint !== false &&
+      guardNotifications.unscheduledFollowUp !== false &&
+      emailTemplates.guard_unscheduled_followup?.enabled !== false;
+
+    if (!isP1s && sendFollowUpAlert && followUpContent) {
       await sendGuardAlert({
         recipients,
         subject: followUpContent.subject,
@@ -1118,7 +1145,11 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
       `An unscheduled print ("${currentFile}") on ${printerName} exceeded the ${graceMinutes}-minute grace period without an active reservation on the portal.\n\n• Sliced File: "${currentFile}"\n• Policy Action: ${unscheduledPrintAction.toUpperCase()}\n• Status: ${actionText}\n• Enforced At: ${enforcedTokens.startTime}\n\n${enforcedTokens.enforcementNote}`
     );
 
-    if (!isP1s && enforcedContent) {
+    const sendEnforcedAlert = allNotificationsEnabled &&
+      guardNotifications.enforcement !== false &&
+      emailTemplates.guard_unscheduled_enforced?.enabled !== false;
+
+    if (!isP1s && sendEnforcedAlert && enforcedContent) {
       await sendGuardAlert({
         recipients,
         subject: enforcedContent.subject,
