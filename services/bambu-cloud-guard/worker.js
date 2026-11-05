@@ -50,14 +50,30 @@ let runtimeStateCache = null;
 let runtimeStateLastFetched = 0;
 
 /**
- * Resolves state value, checking memory first, then cross-isolate cloud object (0 KV calls)
+ * Resolves state value:
+ * 1. Checks memory first (instant, 0 network, 0 KV ops)
+ * 2. Checks Cloudflare KV (fast, persistent across isolates, 100k daily read limit)
+ * 3. Checks cloud state object as fallback
  */
 async function getStoredState(env, key, fallback = null) {
-  if (guardState[key] !== undefined && guardState[key] !== null) {
+  if (guardState[key] !== undefined && guardState[key] !== null && guardState[key] !== '') {
     return guardState[key];
   }
 
-  // If memory is cold, fetch once from persistent cloud state object
+  // 1. Primary: Cloudflare KV (instant edge read, shared across all worker isolates)
+  if (env?.GUARD_KV) {
+    try {
+      const kvVal = await env.GUARD_KV.get(key);
+      if (kvVal !== null && kvVal !== undefined && kvVal !== '') {
+        guardState[key] = kvVal;
+        return kvVal;
+      }
+    } catch (e) {
+      console.warn('[Guard KV Get Error]', e.message || e);
+    }
+  }
+
+  // 2. Secondary fallback: Persistent cloud state object
   const stateUrl = env?.CLOUD_STATE_URL || DEFAULT_CONFIG.cloudStateUrl;
   if (stateUrl && (Date.now() - runtimeStateLastFetched > 15000)) {
     try {
@@ -68,7 +84,7 @@ async function getStoredState(env, key, fallback = null) {
           runtimeStateCache = json.data;
           runtimeStateLastFetched = Date.now();
           for (const [k, v] of Object.entries(json.data)) {
-            if (guardState[k] === undefined || guardState[k] === null) {
+            if (v && (guardState[k] === undefined || guardState[k] === null || guardState[k] === '')) {
               guardState[k] = v;
             }
           }
@@ -79,21 +95,36 @@ async function getStoredState(env, key, fallback = null) {
     }
   }
 
-  return (guardState[key] !== undefined && guardState[key] !== null) ? guardState[key] : fallback;
+  const resolved = guardState[key];
+  return (resolved !== undefined && resolved !== null && resolved !== '') ? resolved : fallback;
 }
 
 /**
- * Updates stored state in memory and persists to cloud state object only if changed (0 KV calls)
+ * Updates stored state:
+ * 1. In memory
+ * 2. In Cloudflare KV with native expirationTtl (default 2 hours). NO DELETES needed!
+ * 3. In cloud state URL as fallback
  */
-async function setStoredState(env, key, val) {
-  if (guardState[key] === val) {
+async function setStoredState(env, key, val, ttlSeconds = 7200) {
+  const strVal = val === null || val === undefined ? '' : String(val);
+  if (guardState[key] === strVal) {
     return; // Already current, no-op
   }
-  guardState[key] = val;
+  guardState[key] = strVal;
 
+  // 1. Write to Cloudflare KV with automatic expiration TTL (0 delete ops consumed!)
+  if (env?.GUARD_KV) {
+    try {
+      await env.GUARD_KV.put(key, strVal, { expirationTtl: Math.max(60, ttlSeconds) });
+    } catch (e) {
+      console.warn('[Guard KV Put Error]', e.message || e);
+    }
+  }
+
+  // 2. Secondary backup to Cloud State URL
   const stateUrl = env?.CLOUD_STATE_URL || DEFAULT_CONFIG.cloudStateUrl;
   if (stateUrl) {
-    runtimeStateCache = { ...(runtimeStateCache || {}), [key]: val };
+    runtimeStateCache = { ...(runtimeStateCache || {}), [key]: strVal };
     try {
       await fetch(stateUrl, {
         method: 'PUT',
@@ -110,29 +141,14 @@ async function setStoredState(env, key, val) {
 }
 
 /**
- * Clears stored state in memory and updates cloud state object only if value was non-null (0 KV calls)
+ * Clears stored state in memory.
+ * CRITICAL: NEVER CALL env.GUARD_KV.delete()!
+ * Keys in KV expire automatically via expirationTtl (0 delete operations consumed!).
  */
 async function deleteStoredState(env, key) {
-  if (guardState[key] === null || guardState[key] === undefined) {
-    return; // Already null/clean, 0 network calls!
-  }
   guardState[key] = null;
-
-  const stateUrl = env?.CLOUD_STATE_URL || DEFAULT_CONFIG.cloudStateUrl;
-  if (stateUrl) {
-    runtimeStateCache = { ...(runtimeStateCache || {}), [key]: null };
-    try {
-      await fetch(stateUrl, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: 'bambu_guard_runtime_state',
-          data: runtimeStateCache,
-        }),
-      });
-    } catch (e) {
-      // ignore
-    }
+  if (runtimeStateCache && runtimeStateCache[key] !== undefined) {
+    delete runtimeStateCache[key];
   }
 }
 
@@ -892,14 +908,15 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
   }
 
   // ==================== CASE C: UNSCHEDULED / ROGUE PRINT (1-MIN GRACE PERIOD) ====================
+  const printJobName = (currentFile || 'unnamed_print').trim();
   let firstSeenStr = await getStoredState(env, `${stateKeyPrefix}unscheduledFirstSeenAt`, null);
   let firstSeen = firstSeenStr ? Number(firstSeenStr) : null;
-  if (!firstSeen) {
+  if (!firstSeen || isNaN(firstSeen)) {
     firstSeen = Date.now();
-    await setStoredState(env, `${stateKeyPrefix}unscheduledFirstSeenAt`, firstSeen);
+    await setStoredState(env, `${stateKeyPrefix}unscheduledFirstSeenAt`, String(firstSeen), 7200);
   }
 
-  const elapsedMs = Date.now() - firstSeen;
+  const elapsedMs = Math.max(0, Date.now() - firstSeen);
   const graceMs = graceMinutes * 60 * 1000;
   const graceRemainingSec = Math.max(0, Math.round((graceMs - elapsedMs) / 1000));
 
@@ -907,8 +924,9 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
 
   // --- IMMEDIATE ALERT ON DETECTION (T0: DISPATCH ONCE) ---
   const initialAlertSent = await getStoredState(env, `${stateKeyPrefix}unscheduledInitialAlertSent`, null);
+  const alreadySentInitial = Boolean(initialAlertSent && (initialAlertSent === printJobName || initialAlertSent === currentFile || initialAlertSent === 'true'));
   let justSentInitialAlert = false;
-  if (!initialAlertSent || initialAlertSent !== currentFile) {
+  if (!alreadySentInitial) {
     const detectedTokens = {
       printerName,
       fileName: currentFile,
@@ -949,14 +967,15 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
       });
     }
 
-    await setStoredState(env, `${stateKeyPrefix}unscheduledInitialAlertSent`, currentFile);
+    await setStoredState(env, `${stateKeyPrefix}unscheduledInitialAlertSent`, printJobName, 7200);
     justSentInitialAlert = true;
   }
 
   // --- 10-MINUTE FOLLOW-UP ALERT (T0 + 10m: DISPATCH ONCE) ---
   const followUpAlertSent = await getStoredState(env, `${stateKeyPrefix}unscheduledFollowUpAlertSent`, null);
+  const alreadySentFollowUp = Boolean(followUpAlertSent && (followUpAlertSent === printJobName || followUpAlertSent === currentFile || followUpAlertSent === 'true'));
   let justSentFollowUpAlert = false;
-  if (elapsedMs >= 10 * 60 * 1000 && (!followUpAlertSent || followUpAlertSent !== currentFile)) {
+  if (elapsedMs >= 10 * 60 * 1000 && !alreadySentFollowUp) {
     const followUpTokens = {
       printerName,
       fileName: currentFile,
@@ -996,7 +1015,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
       });
     }
 
-    await setStoredState(env, `${stateKeyPrefix}unscheduledFollowUpAlertSent`, currentFile);
+    await setStoredState(env, `${stateKeyPrefix}unscheduledFollowUpAlertSent`, printJobName, 7200);
     justSentFollowUpAlert = true;
   }
 
@@ -1096,7 +1115,11 @@ export default {
         isP1s: false
       });
       console.log('[Main X1C Guard (Safe Dry Run)]', JSON.stringify(x1cReport));
+    } catch (err) {
+      console.error('[Main X1C Guard Error]', err.message || err);
+    }
 
+    try {
       // 2. Evaluate User P1S Sandbox (dryRun: false -> LIVE physical auto-cancel & light off)
       const p1sReport = await evaluateGuardCycle(env, {
         serialNumber: env.BAMBU_P1S_SERIAL || DEFAULT_CONFIG.p1sSerialNumber || '01P00C611402117',
@@ -1104,7 +1127,7 @@ export default {
       });
       console.log('[P1S Guard (LIVE Auto-Cancel)]', JSON.stringify(p1sReport));
     } catch (err) {
-      console.error('[Bambu Guard Error]', err.message || err);
+      console.error('[P1S Guard Error]', err.message || err);
     }
   },
 
