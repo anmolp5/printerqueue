@@ -18,6 +18,28 @@ function normalizeBooking(b) {
   };
 }
 
+function renderGuardEmail(templateConfig, tokens, fallbackSubject, fallbackTitle, fallbackBody) {
+  if (templateConfig && templateConfig.enabled === false) {
+    return null;
+  }
+  const rawSubject = templateConfig?.subject || fallbackSubject;
+  const rawBody = templateConfig?.bodyTemplate || fallbackBody;
+
+  const replaceTokens = (text) => {
+    if (!text) return '';
+    return text.replace(/\{\{(\w+)\}\}/g, (_, key) => {
+      const val = tokens[key];
+      return val !== undefined && val !== null ? String(val) : `{{${key}}}`;
+    });
+  };
+
+  return {
+    subject: replaceTokens(rawSubject),
+    title: replaceTokens(fallbackTitle),
+    message: replaceTokens(rawBody),
+  };
+}
+
 function evaluateTestBooking(
   currentFile,
   rawBookings,
@@ -50,6 +72,7 @@ function evaluateTestBooking(
     if (stateStore) {
       delete stateStore.unscheduledFirstSeenAt;
       delete stateStore.unscheduledInitialAlertSent;
+      delete stateStore.unscheduledFollowUpAlertSent;
     }
     const activeBookings = bookings.filter((b) => {
       if (['canceled', 'canceled_late', 'canceled_user', 'canceled_admin', 'completed'].includes(b.status)) return false;
@@ -107,6 +130,7 @@ function evaluateTestBooking(
     if (stateStore) {
       delete stateStore.unscheduledFirstSeenAt;
       delete stateStore.unscheduledInitialAlertSent;
+      delete stateStore.unscheduledFollowUpAlertSent;
     }
 
     // Condition 3: Duration / Overtime Check
@@ -149,6 +173,7 @@ function evaluateTestBooking(
       if (stateStore) {
         delete stateStore.unscheduledFirstSeenAt;
         delete stateStore.unscheduledInitialAlertSent;
+        delete stateStore.unscheduledFollowUpAlertSent;
       }
       return {
         action: 'authorized_early_start',
@@ -172,6 +197,12 @@ function evaluateTestBooking(
     justSentInitialAlert = true;
   }
 
+  let justSentFollowUpAlert = false;
+  if (elapsedMs >= 10 * 60 * 1000 && (!stateStore.unscheduledFollowUpAlertSent || stateStore.unscheduledFollowUpAlertSent !== currentFile)) {
+    stateStore.unscheduledFollowUpAlertSent = currentFile;
+    justSentFollowUpAlert = true;
+  }
+
   if (simulateGrace && elapsedMs < graceMs) {
     return {
       action: 'grace_period',
@@ -179,6 +210,8 @@ function evaluateTestBooking(
       enforcementAction: unscheduledAction,
       initialAlertSent: true,
       justSentInitialAlert,
+      followUpAlertSent: Boolean(stateStore.unscheduledFollowUpAlertSent),
+      justSentFollowUpAlert,
       currentFile,
       elapsedSeconds: Math.round(elapsedMs / 1000),
       graceRemainingSec: Math.max(0, Math.round((graceMs - elapsedMs) / 1000)),
@@ -190,7 +223,10 @@ function evaluateTestBooking(
     enforcementAction: unscheduledAction,
     initialAlertSent: true,
     justSentInitialAlert,
+    followUpAlertSent: Boolean(stateStore.unscheduledFollowUpAlertSent),
+    justSentFollowUpAlert,
     currentFile,
+    elapsedMinutes: Math.round(elapsedMs / 60000),
   };
 }
 
@@ -522,7 +558,7 @@ console.log(
   test15
 );
 
-// Test 16: Unscheduled print first detected -> Dispatches immediate email alert
+// Test 16: Unscheduled print first detected (T0) -> Dispatches initial email alert once
 const testStateStore = {};
 const test16 = evaluateTestBooking(
   'unregistered_print.gcode',
@@ -536,18 +572,18 @@ const test16 = evaluateTestBooking(
   }
 );
 console.log(
-  'Test 16 (Unscheduled print first detected -> Dispatches immediate email alert):',
-  test16.action === 'grace_period' && test16.initialAlertSent === true && test16.justSentInitialAlert === true
+  'Test 16 (T0 Unscheduled print detected -> Dispatches initial alert once):',
+  test16.action === 'grace_period' && test16.initialAlertSent === true && test16.justSentInitialAlert === true && test16.justSentFollowUpAlert === false
     ? 'PASSED ✅'
     : 'FAILED ❌',
   test16
 );
 
-// Test 17: Subsequent cycle with same unscheduled print -> Deduplicated (no repeated alert)
+// Test 17: Minute 1 to 9 (e.g. 5m in) -> Suppressed! Zero emails dispatched
 const test17 = evaluateTestBooking(
   'unregistered_print.gcode',
   [],
-  new Date(now.getTime() + 30000), // 30s later (still in grace)
+  new Date(now.getTime() + 5 * 60 * 1000), // 5 min later
   0.65,
   {
     isPrinting: true,
@@ -556,18 +592,18 @@ const test17 = evaluateTestBooking(
   }
 );
 console.log(
-  'Test 17 (Subsequent cycle with same unscheduled print -> Deduplicated alert):',
-  test17.action === 'grace_period' && test17.initialAlertSent === true && test17.justSentInitialAlert === false
+  'Test 17 (Minutes 1-9 -> Suppressed, zero emails dispatched):',
+  test17.action === 'rogue_unscheduled' && test17.justSentInitialAlert === false && test17.justSentFollowUpAlert === false
     ? 'PASSED ✅'
     : 'FAILED ❌',
   test17
 );
 
-// Test 18: Unscheduled print grace period expires -> Policy enforcement action with alert status intact
+// Test 18: Minute 10 (T0 + 10m) -> Dispatches 10-Minute Reminder alert once
 const test18 = evaluateTestBooking(
   'unregistered_print.gcode',
   [],
-  new Date(now.getTime() + 70000), // 70s later (> 60s grace)
+  new Date(now.getTime() + 10 * 60 * 1000), // 10 min later
   0.65,
   {
     isPrinting: true,
@@ -576,28 +612,48 @@ const test18 = evaluateTestBooking(
   }
 );
 console.log(
-  'Test 18 (Unscheduled print grace expired -> Rogue enforcement action):',
-  test18.action === 'rogue_unscheduled' && test18.enforcementAction === 'cancel' && test18.initialAlertSent === true
+  'Test 18 (Minute 10 -> Dispatches 10-minute follow-up reminder alert once):',
+  test18.action === 'rogue_unscheduled' && test18.followUpAlertSent === true && test18.justSentFollowUpAlert === true && test18.justSentInitialAlert === false
     ? 'PASSED ✅'
     : 'FAILED ❌',
   test18
 );
 
-// Test 19: Printer becomes IDLE/Authorized -> Clears tracking, so next unscheduled print triggers fresh alert
+// Test 19: Minute 15 (T0 + 15m) -> Suppressed! Zero emails dispatched
+const test19 = evaluateTestBooking(
+  'unregistered_print.gcode',
+  [],
+  new Date(now.getTime() + 15 * 60 * 1000), // 15 min later
+  0.65,
+  {
+    isPrinting: true,
+    stateStore: testStateStore,
+    simulateGrace: true,
+  }
+);
+console.log(
+  'Test 19 (Minute 11+ -> Suppressed, zero emails dispatched):',
+  test19.action === 'rogue_unscheduled' && test19.justSentInitialAlert === false && test19.justSentFollowUpAlert === false
+    ? 'PASSED ✅'
+    : 'FAILED ❌',
+  test19
+);
+
+// Test 20: Printer becomes IDLE/Authorized -> Clears tracking, so next unscheduled print triggers fresh T0 alert
 evaluateTestBooking(
   '',
   [],
-  new Date(now.getTime() + 80000),
+  new Date(now.getTime() + 20 * 60 * 1000),
   0.65,
   {
     isPrinting: false,
     stateStore: testStateStore,
   }
 );
-const test19 = evaluateTestBooking(
+const test20 = evaluateTestBooking(
   'new_unscheduled_part.gcode',
   [],
-  new Date(now.getTime() + 90000),
+  new Date(now.getTime() + 21 * 60 * 1000),
   0.65,
   {
     isPrinting: true,
@@ -606,14 +662,53 @@ const test19 = evaluateTestBooking(
   }
 );
 console.log(
-  'Test 19 (State cleared on idle/authorized -> Next unscheduled print triggers fresh alert):',
-  test19.action === 'grace_period' && test19.initialAlertSent === true && test19.justSentInitialAlert === true
+  'Test 20 (State cleared on idle/authorized -> Next unscheduled print triggers fresh alert):',
+  test20.action === 'grace_period' && test20.initialAlertSent === true && test20.justSentInitialAlert === true && test20.justSentFollowUpAlert === false
     ? 'PASSED ✅'
     : 'FAILED ❌',
-  test19
+  test20
 );
 
-console.log('\n🎉 ALL EARLY-ARRIVAL, DURATION, POLICY TOGGLE, EARLY-FINISH, PAUSE & UNSCHEDULED ALERT TESTS COMPLETED SUCCESSFULLY!\n');
+// Test 21: renderGuardEmail token interpolation works correctly
+const testTokens = {
+  fileName: 'test_bracket.3mf',
+  printerName: 'Bambu Lab X1-Carbon',
+  action: 'PAUSE',
+  actionText: 'Paused',
+};
+const renderedEmail = renderGuardEmail(
+  { enabled: true, subject: 'Alert: {{fileName}} on {{printerName}}', bodyTemplate: 'Job {{fileName}} was {{actionText}} via {{action}}.' },
+  testTokens,
+  'Fallback Subject',
+  'Fallback Title',
+  'Fallback Body'
+);
+console.log(
+  'Test 21 (renderGuardEmail correctly interpolates dynamic tokens):',
+  renderedEmail.subject === 'Alert: test_bracket.3mf on Bambu Lab X1-Carbon' &&
+  renderedEmail.message === 'Job test_bracket.3mf was Paused via PAUSE.'
+    ? 'PASSED ✅'
+    : 'FAILED ❌',
+  renderedEmail
+);
+
+// Test 22: renderGuardEmail respects enabled: false by suppressing the email
+const suppressedEmail = renderGuardEmail(
+  { enabled: false, subject: 'Alert', bodyTemplate: 'Message' },
+  testTokens,
+  'Fallback Subject',
+  'Fallback Title',
+  'Fallback Body'
+);
+console.log(
+  'Test 22 (renderGuardEmail suppresses email when enabled is false):',
+  suppressedEmail === null
+    ? 'PASSED ✅'
+    : 'FAILED ❌',
+  suppressedEmail
+);
+
+console.log('\n🎉 ALL EARLY-ARRIVAL, DURATION, POLICY TOGGLE, EARLY-FINISH, PAUSE, UNSCHEDULED ANTI-SPAM & TEMPLATE TESTS COMPLETED SUCCESSFULLY!\n');
 
 
 

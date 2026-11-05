@@ -47,7 +47,14 @@ export type EmailNotificationType =
   | "early_offer"
   | "late_cancel"
   | "late_warning"
-  | "admin_override";
+  | "admin_override"
+  | "guard_unscheduled_detected"
+  | "guard_unscheduled_followup"
+  | "guard_unscheduled_enforced"
+  | "guard_file_mismatch"
+  | "guard_duration_exceeded"
+  | "guard_print_paused"
+  | "guard_early_start";
 
 export interface DispatchedEmail {
   id: string;

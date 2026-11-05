@@ -34,6 +34,7 @@ let guardState = {
   unscheduledFirstSeenAt: null,
   stoppedRogueAlertSent: false,
   unscheduledInitialAlertSent: null,
+  unscheduledFollowUpAlertSent: null,
   mismatchAlertSent: false,
   wasPrinting: false,
   lastEvaluatedAt: null,
@@ -360,6 +361,32 @@ async function checkAndAutoTurnOffP1sLight(connectFn, env, guardConfig, dryRun) 
 }
 
 /**
+ * Renders dynamic email content using admin-configured templates or default fallback.
+ * If template.enabled === false, returns null to suppress the email.
+ */
+function renderGuardEmail(templateConfig, tokens, fallbackSubject, fallbackTitle, fallbackBody) {
+  if (templateConfig && templateConfig.enabled === false) {
+    return null; // Suppressed by admin setting
+  }
+  const rawSubject = templateConfig?.subject || fallbackSubject;
+  const rawBody = templateConfig?.bodyTemplate || fallbackBody;
+
+  const replaceTokens = (text) => {
+    if (!text) return '';
+    return text.replace(/\{\{(\w+)\}\}/g, (_, key) => {
+      const val = tokens[key];
+      return val !== undefined && val !== null ? String(val) : `{{${key}}}`;
+    });
+  };
+
+  return {
+    subject: replaceTokens(rawSubject),
+    title: replaceTokens(fallbackTitle),
+    message: replaceTokens(rawBody),
+  };
+}
+
+/**
  * Core Evaluation Cycle: runs every 1 minute
  */
 async function evaluateGuardCycle(env, overrideOptions = {}) {
@@ -375,6 +402,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
   // 1. Fetch live settings and alert recipients
   const settings = await fetchPortalSettings(settingsUrl);
   const guardConfig = settings?.bambuGuard || {};
+  const emailTemplates = settings?.emailTemplates || {};
   const enabled = guardConfig.enabled !== false;
 
   // DRY RUN CONFIGURATION:
@@ -433,22 +461,44 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
           ? Array.from(new Set([studentEmail, ...recipients]))
           : recipients;
 
-        await sendGuardAlert({
-          recipients: targetRecipients,
-          subject: `⚠️ [ACTION REQUIRED] Print Paused: "${currentFile || candidateBooking.fileName}" on ${isP1s ? 'P1S Sandbox' : 'X1C Lab'}`,
-          title: `Print Paused: ${errorInfo.reason || 'Attention Needed'}`,
-          severity: 'warning',
-          message: `The print for student "${candidateBooking.userName || candidateBooking.userEmail}" has PAUSED on the printer.\n\n• Detected Reason: ${errorInfo.reason || 'Printer paused waiting for user intervention'}\n• Reservation: "${candidateBooking.fileName}"\n• Active Window: ${new Date(candidateBooking.startTime).toLocaleTimeString()} - ${new Date(candidateBooking.endTime).toLocaleTimeString()}\n\nYour reservation slot remains ACTIVE on the calendar so you can inspect the printer, fix the issue, and resume your print.`,
-          printerInfo: {
-            serialNumber,
-            fileName: currentFile,
-            state,
-            progress: printerStatus.mc_percent,
-            remainingTime: printerStatus.mc_remaining_time
-          },
-          resendApiKey,
-          dryRun
-        });
+        const pauseTokens = {
+          printerName: isP1s ? 'Bambu Lab P1S' : 'Bambu Lab X1-Carbon',
+          fileName: currentFile || candidateBooking.fileName,
+          userName: candidateBooking.userName || candidateBooking.userEmail,
+          userEmail: candidateBooking.userEmail,
+          reason: errorInfo.reason || 'Printer paused waiting for user intervention',
+          startTime: new Date(candidateBooking.startTime).toLocaleTimeString(),
+          endTime: new Date(candidateBooking.endTime).toLocaleTimeString(),
+          status: state,
+          enforcementNote: 'Your reservation slot remains ACTIVE on the calendar so you can inspect the printer, fix the issue, and resume your print.'
+        };
+
+        const alertContent = renderGuardEmail(
+          emailTemplates.guard_print_paused,
+          pauseTokens,
+          `⚠️ [ACTION REQUIRED] Print Paused: "${currentFile || candidateBooking.fileName}" on ${isP1s ? 'P1S Sandbox' : 'X1C Lab'}`,
+          `Print Paused: ${errorInfo.reason || 'Attention Needed'}`,
+          `The print for student "${candidateBooking.userName || candidateBooking.userEmail}" has PAUSED on the printer.\n\n• Detected Reason: ${errorInfo.reason || 'Printer paused waiting for user intervention'}\n• Reservation: "${candidateBooking.fileName}"\n• Active Window: ${new Date(candidateBooking.startTime).toLocaleTimeString()} - ${new Date(candidateBooking.endTime).toLocaleTimeString()}\n\nYour reservation slot remains ACTIVE on the calendar so you can inspect the printer, fix the issue, and resume your print.`
+        );
+
+        if (alertContent) {
+          await sendGuardAlert({
+            recipients: targetRecipients,
+            subject: alertContent.subject,
+            title: alertContent.title,
+            severity: 'warning',
+            message: alertContent.message,
+            printerInfo: {
+              serialNumber,
+              fileName: currentFile,
+              state,
+              progress: printerStatus.mc_percent,
+              remainingTime: printerStatus.mc_remaining_time
+            },
+            resendApiKey,
+            dryRun
+          });
+        }
         await setStoredState(env, pauseAlertKey, 'true');
       }
     }
@@ -472,6 +522,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
   if (!isPrinting) {
     await deleteStoredState(env, `${stateKeyPrefix}unscheduledFirstSeenAt`);
     await deleteStoredState(env, `${stateKeyPrefix}unscheduledInitialAlertSent`);
+    await deleteStoredState(env, `${stateKeyPrefix}unscheduledFollowUpAlertSent`);
     await deleteStoredState(env, `${stateKeyPrefix}stoppedRogueAlertSent`);
     await deleteStoredState(env, `${stateKeyPrefix}mismatchAlertSent`);
 
@@ -582,22 +633,46 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
           ? 'The printer toolhead has been safely PAUSED without canceling to allow inspection.'
           : 'Policy is configured to ALERT ONLY: No physical command was dispatched.';
 
-        await sendGuardAlert({
-          recipients,
-          subject: `⚠️ [ACTION: ${fileMismatchAction.toUpperCase()}] File Mismatch: Printer ${actionText} on ${isP1s ? 'P1S' : 'X1C'} for "${activeBooking.userName || activeBooking.userEmail}"`,
-          title: `Print ${actionText}: Sliced File Mismatch Detected (${isP1s ? 'P1S Sandbox' : 'X1C Lab'})`,
-          severity: fileMismatchAction === 'cancel' ? 'critical' : 'warning',
-          message: `A print was started during a reservation for "${activeBooking.userEmail}", but the physical file name does not match the booking:\n\n• Booked File: "${activeBooking.fileName}" (Normalized: "${matchResult.normalizedBooked}")\n• Physical File: "${currentFile}" (Normalized: "${matchResult.normalizedActual}")\n• Similarity Match: ${Math.round(matchResult.score * 100)}% (Minimum required: ${Math.round(similarityThreshold * 100)}%)\n• Action Taken: ${fileMismatchAction.toUpperCase()}\n\n${dryRun ? `⚠️ [DRY RUN] A real ${fileMismatchAction.toUpperCase()} command WOULD have been issued.` : actionDesc}`,
-          printerInfo: {
-            serialNumber,
-            fileName: currentFile,
-            state,
-            progress: printerStatus.mc_percent,
-            remainingTime: printerStatus.mc_remaining_time
-          },
-          resendApiKey,
-          dryRun
-        });
+        const printerName = isP1s ? 'Bambu Lab P1S' : 'Bambu Lab X1-Carbon';
+        const mismatchTokens = {
+          printerName,
+          fileName: currentFile,
+          bookedFileName: activeBooking.fileName,
+          userName: activeBooking.userName || activeBooking.userEmail,
+          userEmail: activeBooking.userEmail,
+          similarityScore: Math.round(matchResult.score * 100),
+          similarityThreshold: Math.round(similarityThreshold * 100),
+          action: fileMismatchAction.toUpperCase(),
+          actionText,
+          enforcementNote: dryRun ? `⚠️ [DRY RUN] A real ${fileMismatchAction.toUpperCase()} command WOULD have been issued.` : actionDesc
+        };
+
+        const alertContent = renderGuardEmail(
+          emailTemplates.guard_file_mismatch,
+          mismatchTokens,
+          `⚠️ [ACTION: ${fileMismatchAction.toUpperCase()}] File Mismatch: Printer ${actionText} on ${isP1s ? 'P1S' : 'X1C'} for "${activeBooking.userName || activeBooking.userEmail}"`,
+          `Print ${actionText}: Sliced File Mismatch Detected (${isP1s ? 'P1S Sandbox' : 'X1C Lab'})`,
+          `A print was started during a reservation for "${activeBooking.userEmail}", but the physical file name does not match the booking:\n\n• Booked File: "${activeBooking.fileName}" (Normalized: "${matchResult.normalizedBooked}")\n• Physical File: "${currentFile}" (Normalized: "${matchResult.normalizedActual}")\n• Similarity Match: ${Math.round(matchResult.score * 100)}% (Minimum required: ${Math.round(similarityThreshold * 100)}%)\n• Action Taken: ${fileMismatchAction.toUpperCase()}\n\n${mismatchTokens.enforcementNote}`
+        );
+
+        if (alertContent) {
+          await sendGuardAlert({
+            recipients,
+            subject: alertContent.subject,
+            title: alertContent.title,
+            severity: fileMismatchAction === 'cancel' ? 'critical' : 'warning',
+            message: alertContent.message,
+            printerInfo: {
+              serialNumber,
+              fileName: currentFile,
+              state,
+              progress: printerStatus.mc_percent,
+              remainingTime: printerStatus.mc_remaining_time
+            },
+            resendApiKey,
+            dryRun
+          });
+        }
 
         await setStoredState(env, `${stateKeyPrefix}mismatchAlertSent`, 'true');
       }
@@ -632,24 +707,48 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
           ? 'The printer toolhead has been safely PAUSED to prevent overlapping the next reservation.'
           : 'Policy is configured to ALERT ONLY: No physical command was dispatched.';
 
-        await sendGuardAlert({
-          recipients,
-          subject: `⏱️ [ACTION: ${durationExceededAction.toUpperCase()}] Duration Exceeded: Print ${actionText} for "${activeBooking.userName || activeBooking.userEmail}"`,
-          title: `Print ${actionText}: Duration Exceeded Reservation (+15m Tolerance)`,
-          severity: 'warning',
-          message: `The active print for "${activeBooking.userEmail}" requires more time than remaining in the reservation slot:\n\n• File: "${currentFile}"\n• Estimated Printer Remaining: ${printerRemainingMinutes} minutes\n• Reservation Remaining: ${remainingReservationMinutes} minutes\n• Excess Overrun: ${printerRemainingMinutes - remainingReservationMinutes} minutes (Tolerance: 15m)\n• Action Taken: ${durationExceededAction.toUpperCase()}\n\n${dryRun ? `⚠️ [DRY RUN] A real ${durationExceededAction.toUpperCase()} command WOULD have been issued.` : actionDesc}`,
-          printerInfo: {
-            serialNumber,
-            fileName: currentFile,
-            state,
-            progress: printerStatus.mc_percent,
-            remainingTime: printerStatus.mc_remaining_time
-          },
-          resendApiKey,
-          dryRun
-        });
+        const printerName = isP1s ? 'Bambu Lab P1S' : 'Bambu Lab X1-Carbon';
+        const durationTokens = {
+          printerName,
+          fileName: currentFile,
+          userName: activeBooking.userName || activeBooking.userEmail,
+          userEmail: activeBooking.userEmail,
+          printerRemainingMinutes,
+          remainingReservationMinutes,
+          overrunMinutes: printerRemainingMinutes - remainingReservationMinutes,
+          action: durationExceededAction.toUpperCase(),
+          actionText,
+          enforcementNote: dryRun ? `⚠️ [DRY RUN] A real ${durationExceededAction.toUpperCase()} command WOULD have been issued.` : actionDesc
+        };
 
-        await setStoredState(env, `durationAlertSent_${activeBooking.id}`, 'true');
+        const alertContent = renderGuardEmail(
+          emailTemplates.guard_duration_exceeded,
+          durationTokens,
+          `⏱️ [ACTION: ${durationExceededAction.toUpperCase()}] Duration Exceeded: Print ${actionText} for "${activeBooking.userName || activeBooking.userEmail}"`,
+          `Print ${actionText}: Duration Exceeded Reservation (+15m Tolerance)`,
+          `The active print for "${activeBooking.userEmail}" requires more time than remaining in the reservation slot:\n\n• File: "${currentFile}"\n• Estimated Printer Remaining: ${printerRemainingMinutes} minutes\n• Reservation Remaining: ${remainingReservationMinutes} minutes\n• Excess Overrun: ${printerRemainingMinutes - remainingReservationMinutes} minutes (Tolerance: 15m)\n• Action Taken: ${durationExceededAction.toUpperCase()}\n\n${durationTokens.enforcementNote}`
+        );
+
+        if (alertContent) {
+          await sendGuardAlert({
+            recipients,
+            subject: alertContent.subject,
+            title: alertContent.title,
+            severity: 'warning',
+            message: alertContent.message,
+            printerInfo: {
+              serialNumber,
+              fileName: currentFile,
+              state,
+              progress: printerStatus.mc_percent,
+              remainingTime: printerStatus.mc_remaining_time
+            },
+            resendApiKey,
+            dryRun
+          });
+        }
+
+        await setStoredState(env, `${stateKeyPrefix}durationAlertSent_${activeBooking.id}`, 'true');
       }
 
       return {
@@ -668,6 +767,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
     // Authorized Print Match! Clear rogue timers and auto-start booking on portal if not yet in_progress
     await deleteStoredState(env, `${stateKeyPrefix}unscheduledFirstSeenAt`);
     await deleteStoredState(env, `${stateKeyPrefix}unscheduledInitialAlertSent`);
+    await deleteStoredState(env, `${stateKeyPrefix}unscheduledFollowUpAlertSent`);
     await deleteStoredState(env, `${stateKeyPrefix}stoppedRogueAlertSent`);
 
     let autoStarted = false;
@@ -721,6 +821,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
     // Student arrived early for their upcoming reservation! DO NOT CANCEL!
     await deleteStoredState(env, `${stateKeyPrefix}unscheduledFirstSeenAt`);
     await deleteStoredState(env, `${stateKeyPrefix}unscheduledInitialAlertSent`);
+    await deleteStoredState(env, `${stateKeyPrefix}unscheduledFollowUpAlertSent`);
     await deleteStoredState(env, `${stateKeyPrefix}stoppedRogueAlertSent`);
 
     let autoStarted = false;
@@ -733,22 +834,43 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
       }
 
       // Send informational push alert notifying that early print has authorized start
-      await sendGuardAlert({
-        recipients,
-        subject: `ℹ️ [EARLY START] Print Started Early: "${currentFile}" on ${isP1s ? 'P1S' : 'X1C'}`,
-        title: `Early Arrival Authorized: Print Started (${isP1s ? 'P1S Sandbox' : 'X1C Lab'})`,
-        severity: 'info',
-        message: `Student "${earlyMatch.userName}" (${earlyMatch.userEmail}) arrived up to 30 minutes early for their scheduled slot (${new Date(earlyMatch.startTime).toLocaleTimeString()}).\n\nFile "${currentFile}" matched reservation "${earlyMatch.fileName}" (${Math.round(earlyMatchResult.score * 100)}% match).\n\nBooking status has been automatically updated to IN PROGRESS.`,
-        printerInfo: {
-          serialNumber,
-          fileName: currentFile,
-          state,
-          progress: printerStatus.mc_percent,
-          remainingTime: printerStatus.mc_remaining_time
-        },
-        resendApiKey,
-        dryRun
-      });
+      const printerName = isP1s ? 'Bambu Lab P1S' : 'Bambu Lab X1-Carbon';
+      const earlyTokens = {
+        printerName,
+        fileName: currentFile,
+        userName: earlyMatch.userName || earlyMatch.userEmail,
+        userEmail: earlyMatch.userEmail,
+        bookedFileName: earlyMatch.fileName,
+        similarityScore: Math.round(earlyMatchResult.score * 100),
+        startTime: new Date(earlyMatch.startTime).toLocaleTimeString()
+      };
+
+      const alertContent = renderGuardEmail(
+        emailTemplates.guard_early_start,
+        earlyTokens,
+        `ℹ️ [EARLY START] Print Started Early: "${currentFile}" on ${isP1s ? 'P1S' : 'X1C'}`,
+        `Early Arrival Authorized: Print Started (${isP1s ? 'P1S Sandbox' : 'X1C Lab'})`,
+        `Student "${earlyMatch.userName}" (${earlyMatch.userEmail}) arrived up to 30 minutes early for their scheduled slot (${new Date(earlyMatch.startTime).toLocaleTimeString()}).\n\nFile "${currentFile}" matched reservation "${earlyMatch.fileName}" (${Math.round(earlyMatchResult.score * 100)}% match).\n\nBooking status has been automatically updated to IN PROGRESS.`
+      );
+
+      if (alertContent) {
+        await sendGuardAlert({
+          recipients,
+          subject: alertContent.subject,
+          title: alertContent.title,
+          severity: 'info',
+          message: alertContent.message,
+          printerInfo: {
+            serialNumber,
+            fileName: currentFile,
+            state,
+            progress: printerStatus.mc_percent,
+            remainingTime: printerStatus.mc_remaining_time
+          },
+          resendApiKey,
+          dryRun
+        });
+      }
     }
 
     return {
@@ -781,52 +903,125 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
   const graceMs = graceMinutes * 60 * 1000;
   const graceRemainingSec = Math.max(0, Math.round((graceMs - elapsedMs) / 1000));
 
-  // --- IMMEDIATE ALERT ON DETECTION ---
-  // Send email alert immediately upon first detection of an unscheduled print (before or during grace period)
+  const printerName = isP1s ? 'Bambu Lab P1S' : 'Bambu Lab X1-Carbon';
+
+  // --- IMMEDIATE ALERT ON DETECTION (T0: DISPATCH ONCE) ---
   const initialAlertSent = await getStoredState(env, `${stateKeyPrefix}unscheduledInitialAlertSent`, null);
   let justSentInitialAlert = false;
   if (!initialAlertSent || initialAlertSent !== currentFile) {
-    await sendGuardAlert({
-      recipients,
-      subject: `🚨 [ALERT] Unscheduled Print Detected: "${currentFile}" on ${isP1s ? 'P1S' : 'X1C'}`,
-      title: `Unscheduled Print Detected: "${currentFile}" (${isP1s ? 'P1S Sandbox' : 'X1C Lab'})`,
-      severity: 'warning',
-      message: `A print was started on ${isP1s ? 'Bambu Lab P1S' : 'Bambu Lab X1-Carbon'} without an active reservation in the portal queue.\n\n• Sliced File: "${currentFile}"\n• Current Status: ${state} (${printerStatus.mc_percent || 0}% complete)\n• First Detected: ${new Date(firstSeen).toLocaleTimeString()}\n• Grace Period: ${graceMinutes} minute(s) remaining for reservation or check-in.\n\n${dryRun ? '⚠️ [DRY RUN] Guard is in monitoring mode. Real prints are not canceled.' : `If no matching reservation is found after ${graceMinutes} minute(s), the printer will be automatically ${unscheduledPrintAction.toUpperCase()}ed.`}`,
-      printerInfo: {
-        serialNumber,
-        fileName: currentFile,
-        state,
-        progress: printerStatus.mc_percent,
-        remainingTime: printerStatus.mc_remaining_time
-      },
-      resendApiKey,
-      dryRun
-    });
+    const detectedTokens = {
+      printerName,
+      fileName: currentFile,
+      status: `${state} (${printerStatus.mc_percent || 0}% complete)`,
+      startTime: new Date(firstSeen).toLocaleTimeString(),
+      gracePeriod: graceMinutes,
+      enforcementNote: dryRun
+        ? '⚠️ [DRY RUN] Guard is in monitoring mode. Real prints are not canceled.'
+        : (unscheduledPrintAction === 'none'
+          ? 'Enforcement policy is set to Alert Only.'
+          : `If no matching reservation is found after ${graceMinutes} minute(s), the printer will be automatically ${unscheduledPrintAction.toUpperCase()}ed.`)
+    };
+
+    const alertContent = renderGuardEmail(
+      emailTemplates.guard_unscheduled_detected,
+      detectedTokens,
+      `🚨 [ALERT] Unscheduled Print Detected: "${currentFile}" on ${isP1s ? 'P1S' : 'X1C'}`,
+      `Unscheduled Print Detected: "${currentFile}" (${printerName})`,
+      `A print was started on ${printerName} without an active reservation in the portal queue.\n\n• Sliced File: "${currentFile}"\n• Current Status: ${state} (${printerStatus.mc_percent || 0}% complete)\n• First Detected: ${new Date(firstSeen).toLocaleTimeString()}\n• Grace Period: ${graceMinutes} minute(s) remaining for reservation or check-in.\n\n${detectedTokens.enforcementNote}`
+    );
+
+    if (alertContent) {
+      await sendGuardAlert({
+        recipients,
+        subject: alertContent.subject,
+        title: alertContent.title,
+        severity: 'warning',
+        message: alertContent.message,
+        printerInfo: {
+          serialNumber,
+          fileName: currentFile,
+          state,
+          progress: printerStatus.mc_percent,
+          remainingTime: printerStatus.mc_remaining_time
+        },
+        resendApiKey,
+        dryRun
+      });
+    }
 
     await setStoredState(env, `${stateKeyPrefix}unscheduledInitialAlertSent`, currentFile);
     justSentInitialAlert = true;
+  }
+
+  // --- 10-MINUTE FOLLOW-UP ALERT (T0 + 10m: DISPATCH ONCE) ---
+  const followUpAlertSent = await getStoredState(env, `${stateKeyPrefix}unscheduledFollowUpAlertSent`, null);
+  let justSentFollowUpAlert = false;
+  if (elapsedMs >= 10 * 60 * 1000 && (!followUpAlertSent || followUpAlertSent !== currentFile)) {
+    const followUpTokens = {
+      printerName,
+      fileName: currentFile,
+      status: `${state} (${printerStatus.mc_percent || 0}% complete)`,
+      startTime: new Date(firstSeen).toLocaleTimeString(),
+      enforcementNote: dryRun
+        ? '⚠️ [DRY RUN] Guard is in monitoring mode. Real prints are not canceled.'
+        : (unscheduledPrintAction === 'none'
+          ? 'Enforcement policy is set to Alert Only.'
+          : `Enforcement policy is configured to ${unscheduledPrintAction.toUpperCase()}.`)
+    };
+
+    const followUpContent = renderGuardEmail(
+      emailTemplates.guard_unscheduled_followup,
+      followUpTokens,
+      `⚠️ [REMINDER] Unscheduled Print Still Running (10m): "${currentFile}" on ${isP1s ? 'P1S' : 'X1C'}`,
+      `Unscheduled Print Still Running (10m): "${currentFile}" (${printerName})`,
+      `The unscheduled print ("${currentFile}") on ${printerName} has been running for 10 minutes without an active reservation in the queue.\n\n• Sliced File: "${currentFile}"\n• Status: ${state} (${printerStatus.mc_percent || 0}% complete)\n• Started: ${new Date(firstSeen).toLocaleTimeString()}\n• Running Time: 10 minutes\n\n${followUpTokens.enforcementNote}`
+    );
+
+    if (followUpContent) {
+      await sendGuardAlert({
+        recipients,
+        subject: followUpContent.subject,
+        title: followUpContent.title,
+        severity: 'warning',
+        message: followUpContent.message,
+        printerInfo: {
+          serialNumber,
+          fileName: currentFile,
+          state,
+          progress: printerStatus.mc_percent,
+          remainingTime: printerStatus.mc_remaining_time
+        },
+        resendApiKey,
+        dryRun
+      });
+    }
+
+    await setStoredState(env, `${stateKeyPrefix}unscheduledFollowUpAlertSent`, currentFile);
+    justSentFollowUpAlert = true;
   }
 
   if (elapsedMs < graceMs) {
     return {
       status: 'grace_period',
       printerState: state,
-      printerName: isP1s ? 'Bambu Lab P1S' : 'Bambu Lab X1-Carbon',
+      printerName,
       serialNumber,
       dryRun,
       currentFile,
       initialAlertSent: true,
       justSentInitialAlert,
+      followUpAlertSent: Boolean(followUpAlertSent || justSentFollowUpAlert),
+      justSentFollowUpAlert,
       elapsedSeconds: Math.round(elapsedMs / 1000),
       graceRemainingSec,
-      message: `Unscheduled print detected on ${isP1s ? 'P1S Sandbox' : 'X1C Lab'}. Immediate alert sent to ${recipients.join(', ')}. Waiting ${graceMinutes}-min grace period (${graceRemainingSec}s remaining).`,
+      message: `Unscheduled print detected on ${isP1s ? 'P1S Sandbox' : 'X1C Lab'}. Waiting ${graceMinutes}-min grace period (${graceRemainingSec}s remaining).`,
       p1sLight: p1sLightReport
     };
   }
 
-  // Grace period expired! Issue dynamic enforcement command & alert
+  // Grace period expired! Issue dynamic enforcement command & alert (ONLY if action is not none)
   const stoppedSent = await getStoredState(env, `${stateKeyPrefix}stoppedRogueAlertSent`, false);
-  if (!stoppedSent || stoppedSent === 'false') {
+  if ((!stoppedSent || stoppedSent === 'false') && unscheduledPrintAction !== 'none') {
     await executeGuardAction(connect, mqttConfig, unscheduledPrintAction, dryRun);
 
     const actionText = unscheduledPrintAction === 'cancel' ? 'Canceled' : unscheduledPrintAction === 'pause' ? 'Paused' : 'Detected (Alert Only)';
@@ -836,22 +1031,42 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
       ? `The print was automatically PAUSED on ${isP1s ? 'P1S Sandbox' : 'X1C Lab'} to allow admin inspection.`
       : 'Policy is configured to ALERT ONLY: No physical command was dispatched.';
 
-    await sendGuardAlert({
-      recipients,
-      subject: `🚨 [ACTION: ${unscheduledPrintAction.toUpperCase()}] Unscheduled Print ${actionText}: "${currentFile}" on ${isP1s ? 'P1S' : 'X1C'}`,
-      title: `Unscheduled Print ${actionText} (Grace Period Expired)`,
-      severity: unscheduledPrintAction === 'none' ? 'warning' : 'critical',
-      message: `A print was started on ${isP1s ? 'Bambu Lab P1S' : 'Bambu Lab X1-Carbon'} without an active or upcoming reservation on the portal.\n\nThe system waited the full ${graceMinutes}-minute grace period for a reservation to be created, but none was found.\n\nEnforcement Policy: ${unscheduledPrintAction.toUpperCase()}\n\n${dryRun ? `⚠️ [DRY RUN] A real ${unscheduledPrintAction.toUpperCase()} command WOULD have been issued.` : actionDesc}`,
-      printerInfo: {
-        serialNumber,
-        fileName: currentFile,
-        state,
-        progress: printerStatus.mc_percent,
-        remainingTime: printerStatus.mc_remaining_time
-      },
-      resendApiKey,
-      dryRun
-    });
+    const enforcedTokens = {
+      printerName,
+      fileName: currentFile,
+      action: unscheduledPrintAction.toUpperCase(),
+      actionText,
+      gracePeriod: graceMinutes,
+      startTime: new Date().toLocaleTimeString(),
+      enforcementNote: dryRun ? `⚠️ [DRY RUN] A real ${unscheduledPrintAction.toUpperCase()} command WOULD have been issued.` : actionDesc
+    };
+
+    const enforcedContent = renderGuardEmail(
+      emailTemplates.guard_unscheduled_enforced,
+      enforcedTokens,
+      `🚨 [ACTION: ${unscheduledPrintAction.toUpperCase()}] Unscheduled Print ${actionText}: "${currentFile}" on ${isP1s ? 'P1S' : 'X1C'}`,
+      `Unscheduled Print ${actionText} (Grace Period Expired)`,
+      `An unscheduled print ("${currentFile}") on ${printerName} exceeded the ${graceMinutes}-minute grace period without an active reservation on the portal.\n\n• Sliced File: "${currentFile}"\n• Policy Action: ${unscheduledPrintAction.toUpperCase()}\n• Status: ${actionText}\n• Enforced At: ${enforcedTokens.startTime}\n\n${enforcedTokens.enforcementNote}`
+    );
+
+    if (enforcedContent) {
+      await sendGuardAlert({
+        recipients,
+        subject: enforcedContent.subject,
+        title: enforcedContent.title,
+        severity: unscheduledPrintAction === 'none' ? 'warning' : 'critical',
+        message: enforcedContent.message,
+        printerInfo: {
+          serialNumber,
+          fileName: currentFile,
+          state,
+          progress: printerStatus.mc_percent,
+          remainingTime: printerStatus.mc_remaining_time
+        },
+        resendApiKey,
+        dryRun
+      });
+    }
 
     await setStoredState(env, `${stateKeyPrefix}stoppedRogueAlertSent`, 'true');
   }
@@ -859,11 +1074,13 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
   return {
     status: `rogue_${unscheduledPrintAction}`,
     action: unscheduledPrintAction,
-    printerName: isP1s ? 'Bambu Lab P1S' : 'Bambu Lab X1-Carbon',
+    printerName,
     serialNumber,
     dryRun,
     currentFile,
     initialAlertSent: true,
+    followUpAlertSent: Boolean(followUpAlertSent || justSentFollowUpAlert),
+    justSentFollowUpAlert,
     elapsedMinutes: Math.round(elapsedMs / 60000),
     p1sLight: p1sLightReport
   };

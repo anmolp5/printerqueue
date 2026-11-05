@@ -10,48 +10,101 @@ const ADMIN_SETTINGS_STORAGE_KEY = "bambu_x1c_admin_settings_v1";
 
 export const EMAIL_TEMPLATE_META: Record<
   EmailNotificationType,
-  { label: string; description: string }
+  { label: string; description: string; category: "student" | "admin_guard" }
 > = {
+  // Student Notifications
   confirmation: {
     label: "Reservation Confirmed",
     description: "Sent immediately when a student books a new print slot.",
+    category: "student",
   },
   pre_booking_reminder: {
     label: "Pre-Booking Reminder",
     description: "Sent X minutes before the scheduled print slot starts.",
+    category: "student",
   },
   slot_starting: {
     label: "Slot Starting Now",
     description: "Sent at the exact start time of a scheduled print slot.",
+    category: "student",
   },
   print_started: {
     label: "Print Started (In Progress)",
     description: "Sent when the user clicks 'Start Print' on the portal.",
+    category: "student",
   },
   print_completed: {
     label: "Print Completed & Bed Cleared",
     description:
       "Sent when the user marks their print complete and clears the build plate.",
+    category: "student",
   },
   early_offer: {
     label: "Early Slot Available (Magic Link)",
     description:
       "Sent to the next scheduled user when the preceding print finishes early.",
+    category: "student",
   },
   late_warning: {
     label: "Late-Arrival Warning (15m)",
     description:
       "Sent if a print hasn't been started 15 minutes into the slot and no one is behind them.",
+    category: "student",
   },
   late_cancel: {
     label: "Late-Arrival Auto-Cancellation",
     description:
       "Sent when an unstarted reservation is automatically canceled due to late arrival.",
+    category: "student",
   },
   admin_override: {
     label: "Lab Admin Schedule Adjustment",
     description:
       "Sent when a Lab Admin manually shifts, edits, or cancels a student's booking.",
+    category: "student",
+  },
+  // Admin & Guard Security Alerts
+  guard_unscheduled_detected: {
+    label: "Unscheduled Print Detected (Immediate Alert)",
+    description:
+      "Sent immediately to Super Admins & Guard recipients when an unreserved print begins.",
+    category: "admin_guard",
+  },
+  guard_unscheduled_followup: {
+    label: "Unscheduled Print 10-Minute Reminder",
+    description:
+      "Sent once at the 10-minute mark if an unreserved print continues running (never sent every minute).",
+    category: "admin_guard",
+  },
+  guard_unscheduled_enforced: {
+    label: "Unscheduled Print Enforced (Grace Expired)",
+    description:
+      "Sent when an unscheduled print's grace period expires and enforcement action occurs.",
+    category: "admin_guard",
+  },
+  guard_file_mismatch: {
+    label: "Sliced File Mismatch Alert",
+    description:
+      "Sent when a print begins during a reserved slot but the physical sliced file does not match the booking.",
+    category: "admin_guard",
+  },
+  guard_duration_exceeded: {
+    label: "Reservation Duration Exceeded Alert",
+    description:
+      "Sent when the print duration exceeds the user's reserved slot by more than 15 minutes.",
+    category: "admin_guard",
+  },
+  guard_print_paused: {
+    label: "Print Paused / Hardware Attention Required",
+    description:
+      "Sent to the student and lab admins when a print pauses due to error, spaghetti, or filament runout.",
+    category: "admin_guard",
+  },
+  guard_early_start: {
+    label: "Early Arrival Authorized Print Started",
+    description:
+      "Sent when a student arrives up to 30 minutes early for their slot and starts their matching print.",
+    category: "admin_guard",
   },
 };
 
@@ -70,6 +123,17 @@ export const AVAILABLE_TEMPLATE_TOKENS = [
   { token: "{{adminEmail}}", description: "Admin who performed the override" },
   { token: "{{previousFileName}}", description: "Preceding print that finished early" },
   { token: "{{newStartTime}}", description: "New earlier start time offered" },
+  { token: "{{printerName}}", description: "Printer device model (e.g. Bambu Lab X1-Carbon)" },
+  { token: "{{gracePeriod}}", description: "Grace period in minutes" },
+  { token: "{{action}}", description: "Policy enforcement action (cancel, pause, none)" },
+  { token: "{{actionText}}", description: "Formatted action description (Canceled, Paused, Alert Only)" },
+  { token: "{{bookedFileName}}", description: "Booked reservation file name" },
+  { token: "{{similarityScore}}", description: "Slicer file match percentage" },
+  { token: "{{similarityThreshold}}", description: "Minimum similarity match required" },
+  { token: "{{printerRemainingMinutes}}", description: "Estimated print time remaining in minutes" },
+  { token: "{{remainingReservationMinutes}}", description: "Remaining reservation slot time in minutes" },
+  { token: "{{overrunMinutes}}", description: "Excess time exceeding reservation in minutes" },
+  { token: "{{enforcementNote}}", description: "Dry run or physical enforcement explanation note" },
 ];
 
 export const DEFAULT_EMAIL_TEMPLATES: Record<
@@ -162,6 +226,90 @@ Reason: {{reason}}`,
 • Start Time: {{startTime}}
 • Duration: {{duration}} mins (+{{buffer}}m buffer)
 • Admin Note: {{reason}}`,
+  },
+  // Admin & Guard Security Alerts
+  guard_unscheduled_detected: {
+    enabled: true,
+    subject: '🚨 [ALERT] Unscheduled Print Detected: "{{fileName}}" on {{printerName}}',
+    bodyTemplate: `A print was started on {{printerName}} without an active reservation in the portal queue.
+
+• Sliced File: "{{fileName}}"
+• Current Status: {{status}}
+• First Detected: {{startTime}}
+• Grace Period: {{gracePeriod}} minute(s) remaining for reservation or check-in.
+
+{{enforcementNote}}`,
+  },
+  guard_unscheduled_followup: {
+    enabled: true,
+    subject: '⚠️ [REMINDER] Unscheduled Print Still Running (10m): "{{fileName}}" on {{printerName}}',
+    bodyTemplate: `The unscheduled print ("{{fileName}}") on {{printerName}} has been running for 10 minutes without an active reservation in the queue.
+
+• Sliced File: "{{fileName}}"
+• Status: {{status}}
+• Started: {{startTime}}
+• Running Time: 10 minutes
+
+{{enforcementNote}}`,
+  },
+  guard_unscheduled_enforced: {
+    enabled: true,
+    subject: '🚨 [ACTION: {{action}}] Unscheduled Print {{actionText}}: "{{fileName}}" on {{printerName}}',
+    bodyTemplate: `An unscheduled print ("{{fileName}}") on {{printerName}} exceeded the {{gracePeriod}}-minute grace period without an active reservation on the portal.
+
+• Sliced File: "{{fileName}}"
+• Policy Action: {{action}}
+• Status: {{actionText}}
+• Enforced At: {{startTime}}
+
+{{enforcementNote}}`,
+  },
+  guard_file_mismatch: {
+    enabled: true,
+    subject: '⚠️ [ACTION: {{action}}] File Mismatch: Printer {{actionText}} on {{printerName}} for "{{userName}}"',
+    bodyTemplate: `A print was started during a reservation for "{{userEmail}}", but the physical sliced file name does not match the booking:
+
+• Booked File: "{{bookedFileName}}"
+• Physical File: "{{fileName}}"
+• Match Score: {{similarityScore}}% (Required: {{similarityThreshold}}%)
+• Action Taken: {{action}}
+
+{{enforcementNote}}`,
+  },
+  guard_duration_exceeded: {
+    enabled: true,
+    subject: '⏱️ [ACTION: {{action}}] Duration Exceeded: Print {{actionText}} for "{{userName}}"',
+    bodyTemplate: `The active print for "{{userEmail}}" requires more time than remaining in the reservation slot:
+
+• File: "{{fileName}}"
+• Estimated Print Remaining: {{printerRemainingMinutes}} minutes
+• Slot Remaining: {{remainingReservationMinutes}} minutes
+• Excess Overrun: {{overrunMinutes}} minutes (Tolerance: 15m)
+• Action Taken: {{action}}
+
+{{enforcementNote}}`,
+  },
+  guard_print_paused: {
+    enabled: true,
+    subject: '⚠️ [ACTION REQUIRED] Print Paused: "{{fileName}}" on {{printerName}}',
+    bodyTemplate: `The print for student "{{userName}}" ({{userEmail}}) has PAUSED on {{printerName}}.
+
+• Detected Reason: {{reason}}
+• File: "{{fileName}}"
+• Active Window: {{startTime}} – {{endTime}}
+
+The reservation slot remains ACTIVE on the calendar so the user can inspect the printer, fix the issue, and resume the print.`,
+  },
+  guard_early_start: {
+    enabled: true,
+    subject: 'ℹ️ [EARLY START] Print Started Early: "{{fileName}}" on {{printerName}}',
+    bodyTemplate: `Student "{{userName}}" ({{userEmail}}) arrived early for their scheduled slot ({{startTime}}).
+
+• Sliced File: "{{fileName}}"
+• Matching Reservation: "{{bookedFileName}}" ({{similarityScore}}% match)
+• New Status: IN PROGRESS
+
+The booking status has been automatically updated on the portal.`,
   },
 };
 

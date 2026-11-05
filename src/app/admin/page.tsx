@@ -65,7 +65,6 @@ import {
   subscribeToEmails,
 } from "@/lib/email";
 import { AdminBookingModal } from "@/components/AdminBookingModal";
-import { P1sTestingSandbox } from "@/components/P1sTestingSandbox";
 import {
   AdminSettings,
   BookingStatus,
@@ -80,7 +79,6 @@ type AdminTabId =
   | "limits"
   | "emails"
   | "guard"
-  | "p1s-sandbox"
   | "queue"
   | "profile"
   | "system";
@@ -100,6 +98,17 @@ const SAMPLE_PREVIEW_VARIABLES: Record<string, string | number> = {
   adminEmail: "anmolp5@illinois.edu",
   previousFileName: "drone_arm_mount.3mf",
   newStartTime: "1:15 PM",
+  printerName: "Bambu Lab X1-Carbon",
+  gracePeriod: 1,
+  action: "cancel",
+  actionText: "Canceled",
+  bookedFileName: "planetary_gearbox_v4.3mf",
+  similarityScore: 12,
+  similarityThreshold: 65,
+  printerRemainingMinutes: 75,
+  remainingReservationMinutes: 30,
+  overrunMinutes: 45,
+  enforcementNote: "⚠️ [DRY RUN] Guard is in monitoring mode. Real prints are not canceled.",
 };
 
 export default function AdminDashboardPage() {
@@ -946,11 +955,6 @@ export default function AdminDashboardPage() {
               icon: ShieldAlert,
             },
             {
-              id: "p1s-sandbox" as AdminTabId,
-              label: "P1S Real-Hardware Sandbox",
-              icon: Printer,
-            },
-            {
               id: "queue" as AdminTabId,
               label: "Queue Manager",
               icon: ListFilter,
@@ -1647,54 +1651,124 @@ export default function AdminDashboardPage() {
         {activeTab === "emails" && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             {/* Template Selector Sidebar */}
-            <div className="lg:col-span-4 bg-white rounded-xl border border-zinc-200 p-3.5 shadow-2xs space-y-1.5">
-              <div className="px-2 py-1.5 text-xs font-bold uppercase tracking-wider text-zinc-500">
-                Notification Templates (9)
-              </div>
-              {(
-                Object.keys(EMAIL_TEMPLATE_META) as EmailNotificationType[]
-              ).map((type) => {
-                const meta = EMAIL_TEMPLATE_META[type];
-                const cfg =
-                  settings.emailTemplates[type] ||
-                  DEFAULT_EMAIL_TEMPLATES[type];
-                const isSelected = selectedTemplateType === type;
-                return (
-                  <button
-                    key={type}
-                    onClick={() => setSelectedTemplateType(type)}
-                    className={`w-full text-left p-3 rounded-xl border transition-all cursor-pointer ${
-                      isSelected
-                        ? "bg-[#13294B] text-white border-[#13294B] shadow-xs"
-                        : "bg-white hover:bg-zinc-50 text-zinc-800 border-zinc-200"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-bold">{meta.label}</span>
-                      <span
-                        className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                          cfg.enabled
-                            ? isSelected
-                              ? "bg-emerald-400/20 text-emerald-200"
-                              : "bg-emerald-100 text-emerald-800"
-                            : isSelected
-                            ? "bg-red-400/20 text-red-200"
-                            : "bg-zinc-200 text-zinc-600"
+            <div className="lg:col-span-4 bg-white rounded-xl border border-zinc-200 p-3.5 shadow-2xs space-y-4">
+              {/* Category 1: Student Notifications */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between px-2 py-1 text-xs font-bold uppercase tracking-wider text-zinc-500">
+                  <span>Student Notifications</span>
+                  <span className="text-[10px] bg-zinc-100 text-zinc-600 px-1.5 py-0.5 rounded font-mono">
+                    {(Object.keys(EMAIL_TEMPLATE_META) as EmailNotificationType[]).filter((t) => EMAIL_TEMPLATE_META[t].category === "student").length}
+                  </span>
+                </div>
+                {(
+                  Object.keys(EMAIL_TEMPLATE_META) as EmailNotificationType[]
+                )
+                  .filter((type) => EMAIL_TEMPLATE_META[type].category === "student")
+                  .map((type) => {
+                    const meta = EMAIL_TEMPLATE_META[type];
+                    const cfg =
+                      settings.emailTemplates[type] ||
+                      DEFAULT_EMAIL_TEMPLATES[type];
+                    const isSelected = selectedTemplateType === type;
+                    return (
+                      <button
+                        key={type}
+                        onClick={() => setSelectedTemplateType(type)}
+                        className={`w-full text-left p-3 rounded-xl border transition-all cursor-pointer ${
+                          isSelected
+                            ? "bg-[#13294B] text-white border-[#13294B] shadow-xs"
+                            : "bg-white hover:bg-zinc-50 text-zinc-800 border-zinc-200"
                         }`}
                       >
-                        {cfg.enabled ? "Enabled" : "Disabled"}
-                      </span>
-                    </div>
-                    <p
-                      className={`text-[11px] mt-1 line-clamp-2 ${
-                        isSelected ? "text-slate-300" : "text-zinc-500"
-                      }`}
-                    >
-                      {meta.description}
-                    </p>
-                  </button>
-                );
-              })}
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-bold">{meta.label}</span>
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                              cfg.enabled
+                                ? isSelected
+                                  ? "bg-emerald-400/20 text-emerald-200"
+                                  : "bg-emerald-100 text-emerald-800"
+                                : isSelected
+                                ? "bg-red-400/20 text-red-200"
+                                : "bg-zinc-200 text-zinc-600"
+                            }`}
+                          >
+                            {cfg.enabled ? "Enabled" : "Disabled"}
+                          </span>
+                        </div>
+                        <p
+                          className={`text-[11px] mt-1 line-clamp-2 ${
+                            isSelected ? "text-slate-300" : "text-zinc-500"
+                          }`}
+                        >
+                          {meta.description}
+                        </p>
+                      </button>
+                    );
+                  })}
+              </div>
+
+              {/* Category 2: Admin & Guard Security Alerts */}
+              <div className="pt-3 border-t border-zinc-200 space-y-1.5">
+                <div className="flex items-center justify-between px-2 py-1 text-xs font-bold uppercase tracking-wider text-[#FF5F05]">
+                  <span className="flex items-center gap-1.5">
+                    <ShieldAlert className="w-3.5 h-3.5" />
+                    Admin & Guard Alerts
+                  </span>
+                  <span className="text-[10px] bg-orange-100 text-[#FF5F05] px-1.5 py-0.5 rounded font-mono">
+                    {(Object.keys(EMAIL_TEMPLATE_META) as EmailNotificationType[]).filter((t) => EMAIL_TEMPLATE_META[t].category === "admin_guard").length}
+                  </span>
+                </div>
+                {(
+                  Object.keys(EMAIL_TEMPLATE_META) as EmailNotificationType[]
+                )
+                  .filter((type) => EMAIL_TEMPLATE_META[type].category === "admin_guard")
+                  .map((type) => {
+                    const meta = EMAIL_TEMPLATE_META[type];
+                    const cfg =
+                      settings.emailTemplates[type] ||
+                      DEFAULT_EMAIL_TEMPLATES[type];
+                    const isSelected = selectedTemplateType === type;
+                    return (
+                      <button
+                        key={type}
+                        onClick={() => setSelectedTemplateType(type)}
+                        className={`w-full text-left p-3 rounded-xl border transition-all cursor-pointer ${
+                          isSelected
+                            ? "bg-[#13294B] text-white border-[#13294B] shadow-xs"
+                            : "bg-white hover:bg-orange-50/40 text-zinc-800 border-zinc-200"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-bold flex items-center gap-1">
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#FF5F05] shrink-0" />
+                            {meta.label}
+                          </span>
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                              cfg.enabled
+                                ? isSelected
+                                  ? "bg-emerald-400/20 text-emerald-200"
+                                  : "bg-emerald-100 text-emerald-800"
+                                : isSelected
+                                ? "bg-red-400/20 text-red-200"
+                                : "bg-zinc-200 text-zinc-600"
+                            }`}
+                          >
+                            {cfg.enabled ? "Enabled" : "Disabled"}
+                          </span>
+                        </div>
+                        <p
+                          className={`text-[11px] mt-1 line-clamp-2 ${
+                            isSelected ? "text-slate-300" : "text-zinc-500"
+                          }`}
+                        >
+                          {meta.description}
+                        </p>
+                      </button>
+                    );
+                  })}
+              </div>
             </div>
 
             {/* Template Editor & Live Preview */}
@@ -1702,12 +1776,23 @@ export default function AdminDashboardPage() {
               <div className="bg-white rounded-xl border border-zinc-200 p-5 shadow-2xs space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 pb-3.5">
                   <div>
-                    <h2 className="text-base font-bold text-zinc-900">
+                    <h2 className="text-base font-bold text-zinc-900 flex items-center gap-2">
                       {EMAIL_TEMPLATE_META[selectedTemplateType].label}
                     </h2>
-                    <p className="text-xs text-zinc-500">
+                    <p className="text-xs text-zinc-500 mt-0.5">
                       {EMAIL_TEMPLATE_META[selectedTemplateType].description}
                     </p>
+                    {EMAIL_TEMPLATE_META[selectedTemplateType].category === "admin_guard" ? (
+                      <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-50 border border-amber-200 text-amber-900 text-[11px] font-semibold mt-2">
+                        <ShieldAlert className="w-3.5 h-3.5 text-[#FF5F05]" />
+                        <span>Delivered to: Super Admin ({SUPER_ADMIN_EMAIL}) & Guard Alert Recipients</span>
+                      </div>
+                    ) : (
+                      <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-blue-50 border border-blue-200 text-blue-900 text-[11px] font-semibold mt-2">
+                        <Mail className="w-3.5 h-3.5 text-blue-600" />
+                        <span>Delivered to: Student User ({"{{userEmail}}"})</span>
+                      </div>
+                    )}
                   </div>
                   <div className="flex items-center gap-3">
                     <label className="inline-flex items-center gap-2 text-xs font-bold text-zinc-800 cursor-pointer">
@@ -1869,7 +1954,7 @@ export default function AdminDashboardPage() {
                     Live Rendered Preview (Sample Reservation Data)
                   </span>
                   <span className="text-[11px] text-slate-400">
-                    To: {user.email}
+                    To: {EMAIL_TEMPLATE_META[selectedTemplateType].category === "admin_guard" ? `${user.email} (Admin Alert Preview)` : user.email}
                   </span>
                 </div>
                 <div className="p-3.5 rounded-lg bg-slate-800/90 border border-slate-700 space-y-2">
@@ -2310,11 +2395,6 @@ export default function AdminDashboardPage() {
               </div>
             </div>
           </div>
-        )}
-
-        {/* ==================== TAB: P1S REAL-HARDWARE SANDBOX ==================== */}
-        {activeTab === "p1s-sandbox" && (
-          <P1sTestingSandbox user={user} isAdmin={isAdmin} />
         )}
 
         {/* ==================== TAB 4: QUEUE & RESERVATIONS MANAGER ==================== */}
