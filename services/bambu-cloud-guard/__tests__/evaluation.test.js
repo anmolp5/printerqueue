@@ -1,4 +1,5 @@
 import { compareFileNames, isGenericPlateName } from '../matcher.js';
+import { sendGuardAlert } from '../notifier.js';
 
 console.log('====================================================');
 console.log('🧪 RUNNING EARLY-ARRIVAL & GUARD LOGIC UNIT TESTS');
@@ -708,7 +709,51 @@ console.log(
   suppressedEmail
 );
 
-console.log('\n🎉 ALL EARLY-ARRIVAL, DURATION, POLICY TOGGLE, EARLY-FINISH, PAUSE, UNSCHEDULED ANTI-SPAM & TEMPLATE TESTS COMPLETED SUCCESSFULLY!\n');
+// Test 23: sendGuardAlert strictly suppresses any notification when isP1s is true
+const p1sAlertResult1 = await sendGuardAlert({
+  subject: 'Test Alert',
+  title: 'Test Title',
+  message: 'Test Message',
+  printerInfo: { isP1s: true }
+});
+console.log(
+  'Test 23 (sendGuardAlert strictly suppresses alerts when isP1s is true):',
+  p1sAlertResult1.suppressed === true && p1sAlertResult1.emailSent === false
+    ? 'PASSED ✅'
+    : 'FAILED ❌',
+  p1sAlertResult1
+);
+
+// Test 24: sendGuardAlert strictly suppresses any notification when serialNumber is P1S serial
+const p1sAlertResult2 = await sendGuardAlert({
+  subject: 'Test Alert',
+  title: 'Test Title',
+  message: 'Test Message',
+  printerInfo: { serialNumber: '01P00C611402117' }
+});
+console.log(
+  'Test 24 (sendGuardAlert strictly suppresses alerts when serialNumber is P1S serial):',
+  p1sAlertResult2.suppressed === true && p1sAlertResult2.emailSent === false
+    ? 'PASSED ✅'
+    : 'FAILED ❌',
+  p1sAlertResult2
+);
+
+// Test 25: sendGuardAlert strictly suppresses any notification when subject/title/message mentions P1S
+const p1sAlertResult3 = await sendGuardAlert({
+  subject: 'Unscheduled Print Detected on P1S',
+  title: 'P1S Alert',
+  message: 'Print started on P1S Sandbox'
+});
+console.log(
+  'Test 25 (sendGuardAlert strictly suppresses alerts when subject/title mentions P1S):',
+  p1sAlertResult3.suppressed === true && p1sAlertResult3.emailSent === false
+    ? 'PASSED ✅'
+    : 'FAILED ❌',
+  p1sAlertResult3
+);
+
+console.log('\n🎉 ALL EARLY-ARRIVAL, DURATION, POLICY TOGGLE, EARLY-FINISH, PAUSE, UNSCHEDULED ANTI-SPAM, TEMPLATE & P1S SUPPRESSION TESTS COMPLETED SUCCESSFULLY!\n');
 
 
 

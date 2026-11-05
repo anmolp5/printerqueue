@@ -22,6 +22,22 @@ export async function sendGuardAlert(params) {
     errors: []
   };
 
+  // STRICT INVARIANT: Never send any email alerts or push notifications for P1S
+  const p1sSerial = '01P00C611402117';
+  if (
+    printerInfo.isP1s ||
+    printerInfo.serialNumber === p1sSerial ||
+    (subject && subject.includes('P1S')) ||
+    (title && title.includes('P1S')) ||
+    (message && message.includes('P1S'))
+  ) {
+    return {
+      ...results,
+      suppressed: true,
+      reason: 'P1S notifications strictly suppressed'
+    };
+  }
+
   const badgeColor = severity === 'critical' ? '#dc2626' : severity === 'warning' ? '#ea580c' : '#13294B';
   const dryRunPrefix = dryRun ? '[DRY RUN] ' : '';
 

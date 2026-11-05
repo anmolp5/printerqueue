@@ -541,7 +541,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
           `The print for student "${candidateBooking.userName || candidateBooking.userEmail}" has PAUSED on the printer.\n\n• Detected Reason: ${errorInfo.reason || 'Printer paused waiting for user intervention'}\n• Reservation: "${candidateBooking.fileName}"\n• Active Window: ${new Date(candidateBooking.startTime).toLocaleTimeString()} - ${new Date(candidateBooking.endTime).toLocaleTimeString()}\n\nYour reservation slot remains ACTIVE on the calendar so you can inspect the printer, fix the issue, and resume your print.`
         );
 
-        if (alertContent) {
+        if (!isP1s && alertContent) {
           await sendGuardAlert({
             recipients: targetRecipients,
             subject: alertContent.subject,
@@ -550,6 +550,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
             message: alertContent.message,
             printerInfo: {
               serialNumber,
+              isP1s,
               fileName: currentFile,
               state,
               progress: printerStatus.mc_percent,
@@ -715,7 +716,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
           `A print was started during a reservation for "${activeBooking.userEmail}", but the physical file name does not match the booking:\n\n• Booked File: "${activeBooking.fileName}" (Normalized: "${matchResult.normalizedBooked}")\n• Physical File: "${currentFile}" (Normalized: "${matchResult.normalizedActual}")\n• Similarity Match: ${Math.round(matchResult.score * 100)}% (Minimum required: ${Math.round(similarityThreshold * 100)}%)\n• Action Taken: ${fileMismatchAction.toUpperCase()}\n\n${mismatchTokens.enforcementNote}`
         );
 
-        if (alertContent) {
+        if (!isP1s && alertContent) {
           await sendGuardAlert({
             recipients,
             subject: alertContent.subject,
@@ -724,6 +725,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
             message: alertContent.message,
             printerInfo: {
               serialNumber,
+              isP1s,
               fileName: currentFile,
               state,
               progress: printerStatus.mc_percent,
@@ -789,7 +791,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
           `The active print for "${activeBooking.userEmail}" requires more time than remaining in the reservation slot:\n\n• File: "${currentFile}"\n• Estimated Printer Remaining: ${printerRemainingMinutes} minutes\n• Reservation Remaining: ${remainingReservationMinutes} minutes\n• Excess Overrun: ${printerRemainingMinutes - remainingReservationMinutes} minutes (Tolerance: 15m)\n• Action Taken: ${durationExceededAction.toUpperCase()}\n\n${durationTokens.enforcementNote}`
         );
 
-        if (alertContent) {
+        if (!isP1s && alertContent) {
           await sendGuardAlert({
             recipients,
             subject: alertContent.subject,
@@ -798,6 +800,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
             message: alertContent.message,
             printerInfo: {
               serialNumber,
+              isP1s,
               fileName: currentFile,
               state,
               progress: printerStatus.mc_percent,
@@ -913,7 +916,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
         `Student "${earlyMatch.userName}" (${earlyMatch.userEmail}) arrived up to 30 minutes early for their scheduled slot (${new Date(earlyMatch.startTime).toLocaleTimeString()}).\n\nFile "${currentFile}" matched reservation "${earlyMatch.fileName}" (${Math.round(earlyMatchResult.score * 100)}% match).\n\nBooking status has been automatically updated to IN PROGRESS.`
       );
 
-      if (alertContent) {
+      if (!isP1s && alertContent) {
         await sendGuardAlert({
           recipients,
           subject: alertContent.subject,
@@ -922,6 +925,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
           message: alertContent.message,
           printerInfo: {
             serialNumber,
+            isP1s,
             fileName: currentFile,
             state,
             progress: printerStatus.mc_percent,
@@ -992,7 +996,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
       `A print was started on ${printerName} without an active reservation in the portal queue.\n\n• Sliced File: "${currentFile}"\n• Current Status: ${state} (${printerStatus.mc_percent || 0}% complete)\n• First Detected: ${new Date(firstSeen).toLocaleTimeString()}\n• Grace Period: ${graceMinutes} minute(s) remaining for reservation or check-in.\n\n${detectedTokens.enforcementNote}`
     );
 
-    if (alertContent) {
+    if (!isP1s && alertContent) {
       await sendGuardAlert({
         recipients,
         subject: alertContent.subject,
@@ -1001,6 +1005,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
         message: alertContent.message,
         printerInfo: {
           serialNumber,
+          isP1s,
           fileName: currentFile,
           state,
           progress: printerStatus.mc_percent,
@@ -1040,7 +1045,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
       `The unscheduled print ("${currentFile}") on ${printerName} has been running for 10 minutes without an active reservation in the queue.\n\n• Sliced File: "${currentFile}"\n• Status: ${state} (${printerStatus.mc_percent || 0}% complete)\n• Started: ${new Date(firstSeen).toLocaleTimeString()}\n• Running Time: 10 minutes\n\n${followUpTokens.enforcementNote}`
     );
 
-    if (followUpContent) {
+    if (!isP1s && followUpContent) {
       await sendGuardAlert({
         recipients,
         subject: followUpContent.subject,
@@ -1049,6 +1054,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
         message: followUpContent.message,
         printerInfo: {
           serialNumber,
+          isP1s,
           fileName: currentFile,
           state,
           progress: printerStatus.mc_percent,
@@ -1112,7 +1118,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
       `An unscheduled print ("${currentFile}") on ${printerName} exceeded the ${graceMinutes}-minute grace period without an active reservation on the portal.\n\n• Sliced File: "${currentFile}"\n• Policy Action: ${unscheduledPrintAction.toUpperCase()}\n• Status: ${actionText}\n• Enforced At: ${enforcedTokens.startTime}\n\n${enforcedTokens.enforcementNote}`
     );
 
-    if (enforcedContent) {
+    if (!isP1s && enforcedContent) {
       await sendGuardAlert({
         recipients,
         subject: enforcedContent.subject,
@@ -1121,6 +1127,7 @@ async function evaluateGuardCycle(env, overrideOptions = {}) {
         message: enforcedContent.message,
         printerInfo: {
           serialNumber,
+          isP1s,
           fileName: currentFile,
           state,
           progress: printerStatus.mc_percent,
@@ -1163,15 +1170,16 @@ export default {
       console.error('[Main X1C Guard Error]', err.message || err);
     }
 
+    // 2. P1S Chamber Light Auto-Shutoff (silently turns off physical light if on, 0 notifications, 0 guard evaluation)
     try {
-      // 2. Evaluate User P1S Sandbox (dryRun: false -> LIVE physical auto-cancel & light off)
-      const p1sReport = await evaluateGuardCycle(env, {
-        serialNumber: env.BAMBU_P1S_SERIAL || DEFAULT_CONFIG.p1sSerialNumber || '01P00C611402117',
-        isP1s: true
-      });
-      console.log('[P1S Guard (LIVE Auto-Cancel)]', JSON.stringify(p1sReport));
+      const settings = await fetchPortalSettings(env.CLOUD_SETTINGS_URL || DEFAULT_CONFIG.cloudSettingsUrl);
+      const guardConfig = settings?.bambuGuard || {};
+      const p1sLightReport = await checkAndAutoTurnOffP1sLight(connect, env, guardConfig, false);
+      if (p1sLightReport?.action && p1sLightReport.action !== 'none_needed') {
+        console.log('[P1S Light Auto-Shutoff]', JSON.stringify(p1sLightReport));
+      }
     } catch (err) {
-      console.error('[P1S Guard Error]', err.message || err);
+      console.warn('[P1S Light Auto-Shutoff Warning]', err.message || err);
     }
   },
 
