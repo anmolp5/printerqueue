@@ -59,7 +59,8 @@ export const ActiveBookingControls: React.FC<ActiveBookingControlsProps> = ({
       (b) =>
         (b.user_id === user.id ||
           b.user_email.trim().toLowerCase() ===
-            user.email.trim().toLowerCase()) &&
+            user.email.trim().toLowerCase() ||
+          (isAdmin && b.status === "in_progress")) &&
         (b.status === "scheduled" || b.status === "in_progress")
     )
     .sort(
@@ -173,6 +174,11 @@ export const ActiveBookingControls: React.FC<ActiveBookingControlsProps> = ({
                         {b.reminder_sent ? " (Sent)" : ""}
                       </span>
                     ) : null}
+                    {b.user_email.toLowerCase() !== user.email.toLowerCase() && (
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 border border-indigo-200 text-[11px] font-semibold">
+                        Student: {b.user_email}
+                      </span>
+                    )}
                   </div>
 
                   <div className="text-xs text-zinc-700 flex flex-wrap items-center gap-x-4 gap-y-1">

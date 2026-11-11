@@ -1392,18 +1392,25 @@ export default {
           for (const b of inProgress) {
             const now = new Date();
             const startMs = new Date(b.actual_started_at).getTime();
-            if (!isNaN(startMs) && now.getTime() - startMs >= 60 * 1000) {
-              b.status = 'completed';
-              const earlyEnd = new Date(now.getTime() + 10 * 60 * 1000).toISOString();
-              b.end_time = earlyEnd;
-              b.endTime = earlyEnd;
-              b.actual_completed_at = now.toISOString();
-              b.updated_at = now.toISOString();
-              autoCompletedBooking = b;
-              guardState.lastBookingsUpdated = now.toISOString();
-              await persistBackupData(env, { bookings: guardState.x1cBookings, updatedAt: now.toISOString() });
-              break;
-            }
+            if (isNaN(startMs)) continue;
+            const elapsedMs = now.getTime() - startMs;
+            if (elapsedMs < 60 * 1000) continue;
+
+            b.status = 'completed';
+            const originalEndMs = new Date(b.end_time || b.endTime).getTime();
+            const earlyEndMs = now.getTime() + 10 * 60 * 1000;
+            // Never extend past original scheduled end time!
+            const effectiveEndMs = !isNaN(originalEndMs) ? Math.min(originalEndMs, earlyEndMs) : earlyEndMs;
+            const finalEndIso = new Date(effectiveEndMs).toISOString();
+
+            b.end_time = finalEndIso;
+            b.endTime = finalEndIso;
+            b.actual_completed_at = now.toISOString();
+            b.updated_at = now.toISOString();
+            autoCompletedBooking = b;
+            guardState.lastBookingsUpdated = now.toISOString();
+            await persistBackupData(env, { bookings: guardState.x1cBookings, updatedAt: now.toISOString() });
+            break;
           }
         }
 
