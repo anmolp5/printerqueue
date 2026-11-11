@@ -956,9 +956,13 @@ export async function editBooking(params: {
     return { error: "Unauthorized: You can only edit your own reservation." };
   }
 
-  // Check status: once a booking has started (status === 'in_progress' or status !== 'scheduled'), strictly return error
-  if (target.status !== "scheduled") {
-    return { error: "This reservation has already started and cannot be edited." };
+  // Check status: regular users can only edit scheduled reservations; admins can also edit in_progress reservations.
+  if (target.status === "in_progress") {
+    if (user.role !== "admin") {
+      return { error: "This reservation has already started and cannot be edited." };
+    }
+  } else if (target.status !== "scheduled") {
+    return { error: `Reservation cannot be edited because its status is "${target.status}".` };
   }
 
   // Validate file_name (not empty) and duration_minutes (1 to 720)
@@ -1023,6 +1027,7 @@ export async function adminOverrideBooking(params: {
   newStatus: BookingStatus;
   sendNotification: boolean;
   reason?: string;
+  newFileName?: string;
 }): Promise<{ data?: CalendarBooking; error?: string }> {
   const {
     bookingId,
@@ -1032,6 +1037,7 @@ export async function adminOverrideBooking(params: {
     newStatus,
     sendNotification,
     reason,
+    newFileName,
   } = params;
 
   if (adminUser.role !== "admin") {
@@ -1069,6 +1075,7 @@ export async function adminOverrideBooking(params: {
 
   const updatedBooking: CalendarBooking = {
     ...target,
+    file_name: (newFileName && newFileName.trim()) || target.file_name,
     start_time: snappedStart.toISOString(),
     end_time: newEndTime.toISOString(),
     duration_minutes: newDurationMinutes,
@@ -1081,7 +1088,7 @@ export async function adminOverrideBooking(params: {
 
   if (sendNotification) {
     const rendered = renderEmailTemplate("admin_override", {
-      fileName: target.file_name,
+      fileName: updatedBooking.file_name,
       userEmail: target.user_email,
       userName: target.user_name || target.user_email,
       adminEmail: adminUser.email,

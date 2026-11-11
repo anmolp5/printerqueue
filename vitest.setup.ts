@@ -30,3 +30,10 @@ const mockStorage = new LocalStorageMock();
     href: "http://localhost:3000/",
   },
 };
+
+(globalThis as any).fetch = async () =>
+  new Response(JSON.stringify({ ok: true, bookings: [] }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+

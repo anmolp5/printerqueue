@@ -7,7 +7,15 @@ export default defineConfig({
       plugins: [],
     },
   },
+  server: {
+    watch: {
+      ignored: ["**/.next/**", "**/out/**", "**/node_modules/**"],
+    },
+  },
   test: {
+    fileParallelism: false,
+    isolate: false,
+    exclude: ["**/node_modules/**", "**/.next/**", "**/out/**"],
     setupFiles: ["./vitest.setup.ts"],
     include: ["src/lib/__tests__/**/*.test.ts"],
     alias: {

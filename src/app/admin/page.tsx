@@ -58,6 +58,7 @@ import {
   startPrintJob,
   completeAndClearBed,
   adminOverrideBooking,
+  editBooking,
   triggerBookingReminderEmail,
   cancelUserBooking,
   resetDemoData,
@@ -3468,6 +3469,13 @@ export default function AdminDashboardPage() {
         booking={adminSelectedBooking}
         user={user}
         onClose={() => setAdminSelectedBooking(null)}
+        onEditBooking={async (params) => {
+          const res = await editBooking(params);
+          if (!res.error) {
+            showToast("success", "Reservation updated successfully.");
+          }
+          return res;
+        }}
         onAdminOverride={async (params) => {
           const res = await adminOverrideBooking({
             bookingId: params.bookingId,
@@ -3477,6 +3485,7 @@ export default function AdminDashboardPage() {
             newStatus: params.newStatus as BookingStatus,
             sendNotification: params.sendNotification,
             reason: params.reason,
+            newFileName: params.newFileName,
           });
           if (!res.error) {
             showToast("success", "Updated reservation successfully.");

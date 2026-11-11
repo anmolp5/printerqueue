@@ -40,6 +40,7 @@ interface AdminBookingModalProps {
     newStatus: BookingStatus;
     sendNotification: boolean;
     reason?: string;
+    newFileName?: string;
   }) => Promise<{ error?: string }>;
   onUserCancel: (bookingId: string) => Promise<void>;
 }
@@ -80,7 +81,8 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
   const isOwner = isBookingOwnedByUser(booking, user);
   const canEdit = isOwner || isAdmin;
   const isLocked =
-    booking.status === "in_progress" || booking.status === "completed";
+    booking.status === "completed" ||
+    (booking.status === "in_progress" && !isAdmin);
 
   const parsedDuration =
     durationInput.trim() === "" ? 0 : Number(durationInput);
@@ -101,7 +103,11 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
     setError(null);
 
     if (isLocked) {
-      setError("This reservation has already started and cannot be edited.");
+      setError(
+        booking.status === "completed"
+          ? "Completed reservations cannot be edited."
+          : "This reservation has already started and cannot be edited."
+      );
       return;
     }
 
@@ -116,23 +122,7 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
     }
 
     setIsSaving(true);
-    const editFn = onEditBooking || editBooking;
-    const res = await editFn({
-      bookingId: booking.id,
-      user,
-      file_name: fileName.trim(),
-      start_time: startTime,
-      duration_minutes: Math.round(parsedDuration),
-    });
-
-    if (res.error) {
-      setIsSaving(false);
-      setError(res.error);
-      return;
-    }
-
-    // If admin also updated status or override notice
-    if (isAdmin && onAdminOverride && status !== "scheduled") {
+    if (isAdmin && onAdminOverride) {
       const overrideRes = await onAdminOverride({
         bookingId: booking.id,
         newStartTime: startTime,
@@ -140,10 +130,26 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
         newStatus: status,
         sendNotification: sendNotice,
         reason,
+        newFileName: fileName.trim(),
       });
       if (overrideRes.error) {
         setIsSaving(false);
         setError(overrideRes.error);
+        return;
+      }
+    } else {
+      const editFn = onEditBooking || editBooking;
+      const res = await editFn({
+        bookingId: booking.id,
+        user,
+        file_name: fileName.trim(),
+        start_time: startTime,
+        duration_minutes: Math.round(parsedDuration),
+      });
+
+      if (res.error) {
+        setIsSaving(false);
+        setError(res.error);
         return;
       }
     }
@@ -192,16 +198,33 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
             onSubmit={handleSave}
             className="p-6 space-y-4 overflow-y-auto flex-1 overscroll-contain"
           >
-            {/* Locked Badge if in_progress or completed */}
-            {isLocked && (
+            {/* Status indicator badges */}
+            {isLocked ? (
               <div
                 className="rounded-xl bg-amber-50 border border-amber-300 p-3.5 text-xs text-amber-900 flex items-center gap-2 font-bold shadow-xs"
                 role="status"
               >
                 <Lock className="w-4 h-4 text-amber-600 shrink-0" />
-                <span>Print In Progress — Editing Locked</span>
+                <span>
+                  {booking.status === "completed"
+                    ? "Print Completed — Editing Locked"
+                    : "Print In Progress — Editing Locked"}
+                </span>
               </div>
-            )}
+            ) : booking.status === "in_progress" && isAdmin ? (
+              <div
+                className="rounded-xl bg-amber-50/80 border border-amber-300 p-3 text-xs text-amber-900 flex items-center justify-between gap-2 shadow-xs"
+                role="status"
+              >
+                <div className="flex items-center gap-2 font-bold">
+                  <Play className="w-4 h-4 text-amber-600 fill-current shrink-0" />
+                  <span>Print In Progress — Admin Edit Mode</span>
+                </div>
+                <span className="text-[10px] font-semibold text-amber-800 bg-amber-100 border border-amber-200 px-2 py-0.5 rounded-full uppercase tracking-wider">
+                  Active Print
+                </span>
+              </div>
+            ) : null}
 
             {/* Red Alert Conflict / Validation Banner */}
             {error && (
@@ -363,7 +386,8 @@ export const AdminBookingModal: React.FC<AdminBookingModalProps> = ({
             {/* Footer Buttons */}
             <div className="sticky bottom-0 bg-white pt-3 pb-1 border-t border-zinc-100 flex flex-wrap items-center justify-between gap-2">
               <div>
-                {booking.status === "scheduled" && (
+                {(booking.status === "scheduled" ||
+                  (isAdmin && booking.status === "in_progress")) && (
                   <button
                     type="button"
                     onClick={async () => {

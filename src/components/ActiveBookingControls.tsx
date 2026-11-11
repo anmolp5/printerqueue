@@ -12,6 +12,7 @@ import {
   AlertTriangle,
   Bell,
   Mail,
+  Edit2,
 } from "lucide-react";
 import { CalendarBooking, UserProfile } from "@/lib/types";
 import { STRICT_RECIPIENT_EMAIL } from "@/lib/email";
@@ -30,6 +31,7 @@ interface ActiveBookingControlsProps {
     bookingId: string,
     mode: "pre_booking_reminder" | "slot_starting"
   ) => Promise<void>;
+  onEditBooking?: (booking: CalendarBooking) => void;
 }
 
 export const ActiveBookingControls: React.FC<ActiveBookingControlsProps> = ({
@@ -39,6 +41,7 @@ export const ActiveBookingControls: React.FC<ActiveBookingControlsProps> = ({
   onCompleteBed,
   onCancelBooking,
   onTriggerBookingEmail,
+  onEditBooking,
 }) => {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [earlyOfferToast, setEarlyOfferToast] = useState<{
@@ -232,6 +235,18 @@ export const ActiveBookingControls: React.FC<ActiveBookingControlsProps> = ({
                         </>
                       )}
 
+                      {isAdmin && onEditBooking && (
+                        <button
+                          type="button"
+                          onClick={() => onEditBooking(b)}
+                          className="px-2.5 py-2 rounded-lg border border-indigo-200 bg-white hover:bg-indigo-50 text-indigo-700 font-semibold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                          title="Admin Edit Reservation"
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                          <span>Admin Edit</span>
+                        </button>
+                      )}
+
                       <button
                         disabled={busyId === b.id}
                         onClick={async () => {
@@ -261,25 +276,38 @@ export const ActiveBookingControls: React.FC<ActiveBookingControlsProps> = ({
                   )}
 
                   {b.status === "in_progress" && (
-                    <button
-                      disabled={busyId === b.id}
-                      onClick={async () => {
-                        setBusyId(b.id);
-                        const res = await onCompleteBed(b.id);
-                        setBusyId(null);
-                        if (res.nextBookingNotified && res.magicLinkUrl) {
-                          setEarlyOfferToast({
-                            nextEmail: res.nextBookingNotified.user_email,
-                            nextFile: res.nextBookingNotified.file_name,
-                            magicLinkUrl: res.magicLinkUrl,
-                          });
-                        }
-                      }}
-                      className="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
-                    >
-                      <CheckCircle2 className="w-4 h-4" />
-                      Mark Complete &amp; Clear Bed
-                    </button>
+                    <>
+                      {isAdmin && onEditBooking && (
+                        <button
+                          type="button"
+                          onClick={() => onEditBooking(b)}
+                          className="px-3.5 py-2 rounded-lg border border-indigo-200 bg-white hover:bg-indigo-50 text-indigo-700 font-semibold text-xs flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
+                          title="Edit this in-progress reservation (change end time, file name, status)"
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                          <span>Admin Edit</span>
+                        </button>
+                      )}
+                      <button
+                        disabled={busyId === b.id}
+                        onClick={async () => {
+                          setBusyId(b.id);
+                          const res = await onCompleteBed(b.id);
+                          setBusyId(null);
+                          if (res.nextBookingNotified && res.magicLinkUrl) {
+                            setEarlyOfferToast({
+                              nextEmail: res.nextBookingNotified.user_email,
+                              nextFile: res.nextBookingNotified.file_name,
+                              magicLinkUrl: res.magicLinkUrl,
+                            });
+                          }
+                        }}
+                        className="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+                      >
+                        <CheckCircle2 className="w-4 h-4" />
+                        Mark Complete &amp; Clear Bed
+                      </button>
+                    </>
                   )}
                 </div>
               </div>

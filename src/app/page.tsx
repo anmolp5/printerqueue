@@ -225,6 +225,7 @@ export default function HomePage() {
     newStatus: BookingStatus;
     sendNotification: boolean;
     reason?: string;
+    newFileName?: string;
   }) => {
     if (!user) return { error: "Not authenticated" };
     const res = await adminOverrideBooking({
@@ -235,6 +236,7 @@ export default function HomePage() {
       newStatus: params.newStatus,
       sendNotification: params.sendNotification,
       reason: params.reason,
+      newFileName: params.newFileName,
     });
     return { error: res.error };
   };
@@ -553,6 +555,7 @@ export default function HomePage() {
           onCompleteBed={handleCompleteBed}
           onCancelBooking={handleCancelBooking}
           onTriggerBookingEmail={handleTriggerBookingEmail}
+          onEditBooking={(b) => setAdminSelectedBooking(b)}
         />
 
         {/* Calendar Toolbar & Legend */}

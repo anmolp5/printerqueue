@@ -109,7 +109,7 @@ describe("editBooking logic & conflict detection", () => {
     expect(res.data?.file_name).toBe("admin_fixed.gcode");
   });
 
-  it("strictly rejects editing once booking has started (status !== scheduled)", async () => {
+  it("strictly rejects students from editing once booking has started (status !== scheduled)", async () => {
     const inProgressBooking: CalendarBooking = {
       ...baseBooking,
       status: "in_progress",
@@ -128,6 +128,66 @@ describe("editBooking logic & conflict detection", () => {
     });
     expect(res.error).toBe(
       "This reservation has already started and cannot be edited."
+    );
+  });
+
+  it("allows admins to edit an in-progress reservation and preserves actual_started_at", async () => {
+    const actualStartedAt = "2026-10-20T10:02:15.000Z";
+    const inProgressBooking: CalendarBooking = {
+      ...baseBooking,
+      status: "in_progress",
+      actual_started_at: actualStartedAt,
+    };
+    window.localStorage.setItem(
+      "bambu_x1c_bookings_v1",
+      JSON.stringify([inProgressBooking])
+    );
+
+    const res = await editBooking({
+      bookingId: inProgressBooking.id,
+      user: adminUser,
+      file_name: "admin_extended.gcode",
+      start_time: new Date("2026-10-20T10:00:00.000Z"),
+      duration_minutes: 90,
+    });
+
+    expect(res.error).toBeUndefined();
+    expect(res.data?.status).toBe("in_progress");
+    expect(res.data?.file_name).toBe("admin_extended.gcode");
+    expect(res.data?.duration_minutes).toBe(90);
+    expect(res.data?.actual_started_at).toBe(actualStartedAt);
+    expect(res.data?.end_time).toBe("2026-10-20T11:40:00.000Z");
+
+    const localAfter = getLocalBookings();
+    const saved = localAfter.find((b) => b.id === inProgressBooking.id);
+    expect(saved?.actual_started_at).toBe(actualStartedAt);
+    expect(saved?.file_name).toBe("admin_extended.gcode");
+  });
+
+  it("detects collisions when admin extends in-progress booking into the next reservation", async () => {
+    const inProgressBooking: CalendarBooking = {
+      ...baseBooking,
+      status: "in_progress",
+      start_time: "2026-10-20T12:00:00.000Z",
+      end_time: "2026-10-20T13:10:00.000Z",
+      duration_minutes: 60,
+    };
+    window.localStorage.setItem(
+      "bambu_x1c_bookings_v1",
+      JSON.stringify([inProgressBooking, secondBooking])
+    );
+
+    // Admin tries to extend duration to 150 min (12:00 -> 14:30 + 10m buffer = 14:40), overlapping secondBooking at 14:00
+    const res = await editBooking({
+      bookingId: inProgressBooking.id,
+      user: adminUser,
+      file_name: "in_progress_long.gcode",
+      start_time: new Date("2026-10-20T12:00:00.000Z"),
+      duration_minutes: 150,
+    });
+
+    expect(res.error).toBe(
+      `Conflicts with existing booking "${secondBooking.file_name}" (${secondBooking.user_email}).`
     );
   });
 
@@ -208,4 +268,55 @@ describe("editBooking logic & conflict detection", () => {
     expect(res.data?.duration_minutes).toBe(75);
     expect(res.data?.file_name).toBe("orig_part_v2.gcode");
   });
+
+  it("persists edited in-progress booking and triggers cloud push", async () => {
+    let pushedData: any = null;
+    const originalFetch = globalThis.fetch;
+    (globalThis as any).fetch = async (url: string, init?: RequestInit) => {
+      if (typeof url === "string" && url.includes("/api/bookings") && init?.method === "POST") {
+        pushedData = JSON.parse(init.body as string);
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+
+    const inProgressBooking: CalendarBooking = {
+      ...baseBooking,
+      status: "in_progress",
+      actual_started_at: "2026-10-20T10:05:00.000Z",
+    };
+    window.localStorage.setItem(
+      "bambu_x1c_bookings_v1",
+      JSON.stringify([inProgressBooking])
+    );
+
+    const res = await editBooking({
+      bookingId: inProgressBooking.id,
+      user: adminUser,
+      file_name: "synced_cloud_part.gcode",
+      start_time: new Date("2026-10-20T10:00:00.000Z"),
+      duration_minutes: 80,
+    });
+
+    expect(res.error).toBeUndefined();
+    expect(res.data?.file_name).toBe("synced_cloud_part.gcode");
+    expect(res.data?.status).toBe("in_progress");
+    expect(res.data?.actual_started_at).toBe("2026-10-20T10:05:00.000Z");
+
+    expect(pushedData).toBeDefined();
+    expect(Array.isArray(pushedData.bookings)).toBe(true);
+    const cloudBooking = pushedData.bookings.find(
+      (b: CalendarBooking) => b.id === inProgressBooking.id
+    );
+    expect(cloudBooking).toBeDefined();
+    expect(cloudBooking.file_name).toBe("synced_cloud_part.gcode");
+    expect(cloudBooking.duration_minutes).toBe(80);
+    expect(cloudBooking.status).toBe("in_progress");
+    expect(cloudBooking.actual_started_at).toBe("2026-10-20T10:05:00.000Z");
+
+    globalThis.fetch = originalFetch;
+  });
 });
+
